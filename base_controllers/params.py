@@ -617,7 +617,7 @@ robot_params['climbingrobot_slider'] ={'dt': 0.001,
                        'spawn_z' : 20.0,
                        'buffer_size': 10000} # note the frames are all aligned with base for joints = 0
 
-robot_params['climbingrobot2'] ={'dt': 0.01,
+robot_params['climbingrobot2'] ={'dt': 0.001,
                        'kp': np.array([0 ,    0,    400,  40,    40,   40,
                                        0 ,    0,   400,  40,    40,   40,
                                        150, 130, 120]),
