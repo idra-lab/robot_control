@@ -95,7 +95,7 @@ class RosbagControlledRecorder(object):
     """Record a rosbag with service calls to control start, stop and pause."""
 
     def __init__(self, topics=' -a', bag_name=None, record_from_startup_=False, bag_folder=None, local_folder=False):
-        rosbag_command_ = "rosbag record" + topics
+        rosbag_command_ = "rosbag record " + topics
         self.bag_name = bag_name
         self.bag_folder = bag_folder
 
