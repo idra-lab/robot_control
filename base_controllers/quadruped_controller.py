@@ -1714,13 +1714,18 @@ class QuadrupedController(BaseController):
 
 
 if __name__ == '__main__':
-    p = QuadrupedController('go2')
+    p = QuadrupedController('aliengo')
     world_name = 'fast.world'
     use_gui = False
     p.state_estimation = 'odometry' # 'odometry','imu', 'pronto', 'ground_truth' (only sim), 'mocap'
     rl_control = 'none' #'none', 'sensor_based' (Giulio), 'state_est_based' (Riccardo)
     # NOTE: in the RL controller, SE NN is used only if state estimation is not pronto
     rl_use_nn_se = p.state_estimation != 'pronto'
+    # Which policy family RlVelocityController runs: 'legacy' is the original set of networks under
+    # components/rl_velocity_controller/policies, 'velocity' is the single-network policy in
+    # rl_quadruped/policies that estimates the base velocity inside the actor (and so ignores
+    # rl_use_nn_se, having no variant that takes a measured base velocity).
+    rl_policy = 'velocity'  # 'legacy', 'velocity'
     use_joy = False
     generate_reference = False
     p.SAVE_BAG = False  #
@@ -1732,7 +1737,8 @@ if __name__ == '__main__':
         if p.real_robot and (p.state_estimation != 'pronto' and p.state_estimation != 'pronto'):
             print(colored("RL is state_est based need to start state estimation!","red"))
             sys.exit()
-        rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=rl_use_nn_se, debug=True)
+        rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=rl_use_nn_se,
+                                             debug=True, policy=rl_policy)
     if rl_control == 'sensor_based':
         rl_controller = LocomotionPolicyWrapper(use_state_est=True, dt = p.dt)
 
