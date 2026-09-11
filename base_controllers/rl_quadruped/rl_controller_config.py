@@ -86,11 +86,11 @@ DEFAULTS = {
     # Repositioning the legs on the ground during INIT: softer and better damped than the stand-up
     # set, because the feet are loaded and being dragged, and stiff position control there is what
     # makes the robot judder.
-    "kp_fold": np.array([100., 100., 100.] * 4),
-    "kd_fold": np.array([3., 3., 3.] * 4),
+    "kp_fold": np.array([60., 60., 60.] * 4),
+    "kd_fold": np.array([0.5, 0.5, 0.5] * 4),
     # Lifting and holding the body.
     "kp_stand": np.array([100., 100., 100.] * 4),
-    "kd_stand": np.array([3., 3., 3.] * 4),
+    "kd_stand": np.array([1.0, 1.0, 1.0] * 4),
     # While the policy drives.  None takes the values the policy was trained with, read from the
     # policy's json (Isaac DelayedPDActuatorCfg: stiffness 35, damping 0.5).  Overriding these is a
     # deliberate departure from training - the soft damping is what the policy expects.
@@ -98,7 +98,7 @@ DEFAULTS = {
     "kd_rl": None,
     # Emergency collapse: kp is zero, so joint torque is -kd*qd and the robot sinks under its own
     # weight with the energy bled off instead of dropping.
-    "kd_damping": np.array([10., 10., 10.] * 4),
+    "kd_damping": np.array([1., 1., 1.] * 4),
 
     # =============================================================================================
     # motion timing, seconds
@@ -109,7 +109,7 @@ DEFAULTS = {
     # Worth of *continuously still* samples the bias estimate integrates over.  At 500 Hz that is
     # 1500 samples, which brings the per-axis spread down to a few 1e-4 m/s^2.  The total wait is
     # this plus calib_stable_window.
-    "calibration_duration": 3.0,
+    "calibration_duration": 5.0,
     "stand_up_duration": 2.0,      # total, split over the stand-up waypoints
     "stand_down_duration": 2.0,
     "damping_ramp_duration": 0.6,  # feed-forward torque ramp-out
@@ -135,8 +135,8 @@ DEFAULTS = {
     "calib_stable_window": 1.0,         # s of uninterrupted stillness before sampling starts
     # A settled robot measures about 0.003 rad/s of base rate and 0.012 rad/s of joint rate, so
     # these leave a wide margin while still rejecting a robot that is drifting or being nudged.
-    "calib_gyro_threshold": 0.05,       # rad/s
-    "calib_joint_vel_threshold": 0.10,  # rad/s
+    "calib_gyro_threshold": 0.2,       # rad/s
+    "calib_joint_vel_threshold": 0.5,  # rad/s
     "calib_wait_timeout": 30.0,         # s before giving up on ever being still
     "calib_max_bias": 2.0,              # m/s^2, a larger estimate is rejected outright
     "calib_max_spread": 0.25,           # m/s^2, per-axis sample std above which the window is redone
@@ -156,7 +156,7 @@ DEFAULTS = {
     # never sees.  Tripping the walking limit there would answer a request for a recovery with a
     # collapse.
     "safe_max_roll_pitch": 1.3,
-    "max_joint_vel": 25.0,          # rad/s -> DAMPING
+    "max_joint_vel": 50.0,          # rad/s -> DAMPING
     "clip_to_joint_limits": None,   # None: on for the real robot, off in simulation
 
     # =============================================================================================
@@ -183,12 +183,12 @@ DEFAULTS = {
     # =============================================================================================
     # operator input
     # =============================================================================================
-    "max_lin_vel_cmd": 0.5,   # m/s, the range the policy was trained on
-    "max_ang_vel_cmd": 0.5,   # rad/s
+    "max_lin_vel_cmd": 0.4,   # m/s, the range the policy was trained on
+    "max_ang_vel_cmd": 0.4,   # rad/s
     "key_lin_step": 0.1,      # m/s per key press
     "key_ang_step": 0.1,      # rad/s per key press
     "key_speed_presets": (0.0, 0.1, 0.2, 0.3, 0.4),  # forward m/s, keys 1..5
-    "joy_dead_zone": 0.08,
+    "joy_dead_zone": 0.05,
 
     # =============================================================================================
     # telemetry - published on ROS topics, nothing is accumulated in memory
@@ -210,7 +210,7 @@ DEFAULTS = {
     # number can be seen from outside.  False never reads it and never runs it - one three-layer
     # forward pass less per inference tick - and makes 'publish_estimated_velocity' moot, since
     # there is then nothing to publish.  Also on the command line as --no-estimator.
-    "estimate_base_velocity": False,
+    "estimate_base_velocity": True,
     # Time every inference tick and publish policy/infer_ms and policy/infer_over_budget.  This is
     # instrumentation, not control.  False drops the two perf_counter calls per inference, both
     # topics, the start-up benchmark and the shutdown timing summary; the benchmark itself still
