@@ -337,7 +337,7 @@ class JoyCommandInterface(CommandInterfaceBase):
         except Exception:
             pass
         try:
-            subprocess.Popen(["rosrun", "joy", "joy_node"])
+            subprocess.Popen(["rosrun", "joy", "joy_node", "_dev:=/dev/input/js0"])
         except Exception as exc:
             raise RuntimeError(f"Could not start the ROS joy node: {exc}")
         try:

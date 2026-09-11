@@ -7,11 +7,12 @@ from base_controllers.utils.common_functions import checkRosMaster
 
 
 class JoyManager:
-    def __init__(self):
+    def __init__(self, port="js0"):
         """
         Manages joystick input by subscribing to /joy.
         Always restarts the joy_node to ensure a fresh connection.
         """
+        self.port = port
         self.latest_msg = Joy()
         self.sub = rospy.Subscriber("/joy", Joy, self._joy_callback)
         self._restart_joy_node()
@@ -32,7 +33,7 @@ class JoyManager:
 
         # Start a new joy_node
         try:
-            subprocess.Popen(["rosrun", "joy", "joy_node"])
+            subprocess.Popen(["rosrun", "joy", "joy_node", "_dev:=/dev/input/"+self.port])
             rospy.loginfo("Started new joy_node instance.")
         except Exception as e:
             rospy.logerr(f"Failed to start joy_node: {e}")
