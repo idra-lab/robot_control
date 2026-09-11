@@ -8,14 +8,14 @@
     "num_actions": 12,
     "history_length": 5,
     "policy_rate": 50.0,
-    "action_scale": 0.2,
+    "action_scale": 0.5,
     "q_default": [
         0.0, 0.9, -1.8,
         0.0, 0.9, -1.8,
         0.0, 0.9, -1.8,
         0.0, 0.9, -1.8
     ],
-    "kp": 35.0,
+    "kp": 25.0,
     "kd": 0.5,
     "obs_layout": [
         ["velocity_commands", 3, 1],

@@ -21,12 +21,14 @@ preset with the number keys, and typing an exact command after ``v``.
 import atexit
 import os
 import select
+import struct
 import subprocess
 import sys
 import termios
 import time
 import tty
 from enum import Enum
+from types import SimpleNamespace
 
 import numpy as np
 import rospy as ros
@@ -396,12 +398,111 @@ class JoyCommandInterface(CommandInterfaceBase):
                 "  B  stand down                RB  SAFE STOP (stay standing)\n"
                 "  BACK or LB+RB  EMERGENCY damping      START  quit\n")
 
+class LinuxJoyCommandInterface(JoyCommandInterface):
+    """The same pad and the same mapping as :class:`JoyCommandInterface`, read straight from
+    ``/dev/input/jsN`` instead of the ROS ``/joy`` topic.
+
+    It exists because this container has no ``ros-noetic-joy`` package, so the ``/joy`` path above
+    cannot work, and installing one into a container that is recreated with ``--rm`` buys a pad that
+    stops working tomorrow.  The Linux joystick API is four fields of a binary struct, so reading it
+    here costs less than the dependency does.
+
+    The axis sign follows the ROS ``joy_node`` convention (``-value / 32767``), so that stick
+    forward and stick left are positive, and every button index and stick assignment is inherited
+    from the parent unchanged - the pad means the same thing whichever transport it arrives on.
+    """
+
+    EVENT_FORMAT = "<IhBB"      # time (u32), value (s16), type (u8), number (u8)
+    EVENT_SIZE = struct.calcsize(EVENT_FORMAT)
+    JS_EVENT_BUTTON, JS_EVENT_AXIS, JS_EVENT_INIT = 0x01, 0x02, 0x80
+    JSIOCGAXES, JSIOCGBUTTONS = 0x80016a11, 0x80016a12
+    MIN_AXES = 4                # left stick (2) + right stick (2); fewer is not a gamepad
+
+    def __init__(self, device="/dev/input/js0", max_lin_vel=0.5, max_ang_vel=0.5, dead_zone=0.08,
+                 push_force=125.0, push_force_step=25.0, **ignored):
+        CommandInterfaceBase.__init__(self, max_lin_vel, max_ang_vel, push_force, push_force_step)
+        self.dead_zone = dead_zone
+        self.device = device
+        self._axes = [0.0] * 8
+        self._buttons = [0] * 16
+        self._msg = SimpleNamespace(axes=self._axes, buttons=self._buttons)
+        self._prev_buttons = None
+        try:
+            self._fd = os.open(device, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Cannot open the joystick at {device} ({exc}). Check that the pad is plugged in "
+                f"and that the container can see it (ls /dev/input/js*)")
+
+        # A js node is not proof of a gamepad: virtual mice and other devices expose one too, and
+        # their idle axes read full scale, which would hand the policy a running command before the
+        # operator has touched anything.  Refuse rather than drive the robot off a phantom stick.
+        name, axes = self._identify()
+        if axes is not None and axes < self.MIN_AXES:
+            os.close(self._fd)
+            self._fd = None
+            raise RuntimeError(
+                f"{device} is '{name}' with {axes} axes - that is not a gamepad. Check "
+                f"'cat /sys/class/input/js*/device/name' and pass the right one with --joy-device")
+        print(colored(f"Joystick '{name}' on {device}, {axes} axes (read directly, no ROS)",
+                      "green"))
+        print(colored(self.help(), "cyan"))
+
+    def _identify(self):
+        """The device's name and axis count, straight from the joystick ioctls."""
+        name, axes = "unknown", None
+        try:
+            import fcntl
+            buffer = bytearray(1)
+            fcntl.ioctl(self._fd, self.JSIOCGAXES, buffer)
+            axes = buffer[0]
+            buffer = bytearray(128)
+            fcntl.ioctl(self._fd, 0x80006a13 | (len(buffer) << 16), buffer)
+            name = buffer.split(b"\x00")[0].decode(errors="replace") or "unknown"
+        except (OSError, ImportError):
+            pass
+        return name, axes
+
+    def update(self):
+        """Drain the pending joystick events, then apply the inherited mapping."""
+        while True:
+            try:
+                data = os.read(self._fd, self.EVENT_SIZE)
+            except BlockingIOError:
+                break
+            except OSError:
+                break
+            if not data or len(data) < self.EVENT_SIZE:
+                break
+            _, value, kind, number = struct.unpack(self.EVENT_FORMAT, data)
+            if kind & self.JS_EVENT_INIT:
+                # The synthetic events the kernel replays on open describe the device's current
+                # state, which for triggers and for anything that is not a gamepad is full scale.
+                # Starting from neutral means nothing moves until the operator moves it.
+                continue
+            kind &= ~self.JS_EVENT_INIT
+            if kind == self.JS_EVENT_AXIS and number < len(self._axes):
+                # ROS's joy_node negates, and the parent's stick mapping assumes that convention.
+                self._axes[number] = -value / 32767.0
+            elif kind == self.JS_EVENT_BUTTON and number < len(self._buttons):
+                self._buttons[number] = 1 if value else 0
+        super(LinuxJoyCommandInterface, self).update()
+
+    def shutdown(self):
+        if getattr(self, "_fd", None) is not None:
+            try:
+                os.close(self._fd)
+            except OSError:
+                pass
+            self._fd = None
 
 def create_command_interface(kind="keyboard", cfg=None, **kwargs):
     """Build a command interface.
 
     Args:
-        kind: ``'keyboard'``, ``'joy'`` (also ``'joystick'``/``'xbox'``) or ``'none'``.
+        kind: ``'keyboard'``, ``'joy'`` (also ``'joystick'``/``'xbox'``) for a pad over the ROS
+            ``/joy`` topic, ``'joydev'`` for the same pad read straight from ``/dev/input/js0``
+            with no ROS involved, or ``'none'``.
         cfg: optional controller configuration dict (see
             :mod:`base_controllers.rl_controller_config`); the input-related keys are picked out of
             it so callers do not have to unpack them by hand.
@@ -417,7 +518,7 @@ def create_command_interface(kind="keyboard", cfg=None, **kwargs):
             options["lin_step"] = cfg["key_lin_step"]
             options["ang_step"] = cfg["key_ang_step"]
             options["speed_presets"] = cfg["key_speed_presets"]
-        elif kind in ("joy", "joystick", "xbox"):
+        elif kind in ("joy", "joystick", "xbox", "joydev"):
             options["dead_zone"] = cfg["joy_dead_zone"]
     options.update(kwargs)
 
@@ -425,8 +526,11 @@ def create_command_interface(kind="keyboard", cfg=None, **kwargs):
         return KeyboardCommandInterface(**options)
     if kind in ("joy", "joystick", "xbox"):
         return JoyCommandInterface(**options)
+    if kind == "joydev":
+        return LinuxJoyCommandInterface(**options)
     if kind in ("none", None):
         options.pop("dead_zone", None)
+        options.pop("device", None)
         for key in ("lin_step", "ang_step", "speed_presets"):
             options.pop(key, None)
         return NullCommandInterface(**options)

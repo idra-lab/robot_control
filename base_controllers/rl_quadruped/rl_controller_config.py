@@ -86,11 +86,11 @@ DEFAULTS = {
     # Repositioning the legs on the ground during INIT: softer and better damped than the stand-up
     # set, because the feet are loaded and being dragged, and stiff position control there is what
     # makes the robot judder.
-    "kp_fold": np.array([100., 100., 100.] * 4),
-    "kd_fold": np.array([3., 3., 3.] * 4),
+    "kp_fold": np.array([60., 60., 60.] * 4),
+    "kd_fold": np.array([0.5, 0.5, 0.5] * 4),
     # Lifting and holding the body.
     "kp_stand": np.array([100., 100., 100.] * 4),
-    "kd_stand": np.array([3., 3., 3.] * 4),
+    "kd_stand": np.array([1.0, 1.0, 1.0] * 4),
     # While the policy drives.  None takes the values the policy was trained with, read from the
     # policy's json (Isaac DelayedPDActuatorCfg: stiffness 35, damping 0.5).  Overriding these is a
     # deliberate departure from training - the soft damping is what the policy expects.
@@ -98,7 +98,7 @@ DEFAULTS = {
     "kd_rl": None,
     # Emergency collapse: kp is zero, so joint torque is -kd*qd and the robot sinks under its own
     # weight with the energy bled off instead of dropping.
-    "kd_damping": np.array([10., 10., 10.] * 4),
+    "kd_damping": np.array([1., 1., 1.] * 4),
 
     # =============================================================================================
     # motion timing, seconds
@@ -109,7 +109,7 @@ DEFAULTS = {
     # Worth of *continuously still* samples the bias estimate integrates over.  At 500 Hz that is
     # 1500 samples, which brings the per-axis spread down to a few 1e-4 m/s^2.  The total wait is
     # this plus calib_stable_window.
-    "calibration_duration": 3.0,
+    "calibration_duration": 5.0,
     "stand_up_duration": 2.0,      # total, split over the stand-up waypoints
     "stand_down_duration": 2.0,
     "damping_ramp_duration": 0.6,  # feed-forward torque ramp-out
@@ -135,8 +135,8 @@ DEFAULTS = {
     "calib_stable_window": 1.0,         # s of uninterrupted stillness before sampling starts
     # A settled robot measures about 0.003 rad/s of base rate and 0.012 rad/s of joint rate, so
     # these leave a wide margin while still rejecting a robot that is drifting or being nudged.
-    "calib_gyro_threshold": 0.05,       # rad/s
-    "calib_joint_vel_threshold": 0.10,  # rad/s
+    "calib_gyro_threshold": 0.2,       # rad/s
+    "calib_joint_vel_threshold": 0.5,  # rad/s
     "calib_wait_timeout": 30.0,         # s before giving up on ever being still
     "calib_max_bias": 2.0,              # m/s^2, a larger estimate is rejected outright
     "calib_max_spread": 0.25,           # m/s^2, per-axis sample std above which the window is redone
@@ -150,13 +150,13 @@ DEFAULTS = {
     # =============================================================================================
     # safety envelope while standing or walking
     # =============================================================================================
-    "max_roll_pitch": 1.0,          # rad, beyond this the robot is on its way over -> DAMPING
+    "max_roll_pitch": 1.5,          # rad, beyond this the robot is on its way over -> DAMPING
     # The same limit during the safe stop, where it has to be wider: that policy is trained on
     # resets of +-0.25 rad and on pushes, so it is meant to be handed attitudes the walking policy
     # never sees.  Tripping the walking limit there would answer a request for a recovery with a
     # collapse.
-    "safe_max_roll_pitch": 1.3,
-    "max_joint_vel": 25.0,          # rad/s -> DAMPING
+    "safe_max_roll_pitch": 1.5,
+    "max_joint_vel": 50.0,          # rad/s -> DAMPING
     "clip_to_joint_limits": None,   # None: on for the real robot, off in simulation
 
     # =============================================================================================
@@ -260,7 +260,13 @@ DEFAULTS = {
     # Radius of the foot collision sphere; the foot frame sits at its centre, so the base has to
     # start this much higher than the pure kinematic foot-to-base distance.
     "foot_radius": 0.0265,
-    "world_name": "fast.world",
+    # rl_flat.world is fast.world with an explicit ODE <constraints> block. Gazebo's default
+    # contact_surface_layer lets a foot sink 1 mm before any contact force builds, which a trotting
+    # robot feels as a spongy floor: base roll rms while walking goes 5.2 -> 3.1 deg at 0.3 m/s and
+    # 5.4 -> 2.0 deg at 0.5 m/s with it at zero, and back to 5.6 / 4.2 deg when it is restored.
+    # A reference simulator running the same network on the training URDF sits at 1.5 deg, so
+    # this closes most of the gap to Isaac but not all of it.
+    "world_name": "rl_flat.world",
     # Start rviz with the simulator.  On by default: it is the intended way to look at the robot,
     # and unlike the Gazebo GUI it renders from the published TF and markers rather than driving
     # the physics window.  It is still another process competing for the machine, so --no-rviz is
