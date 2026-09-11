@@ -50,10 +50,10 @@ if __name__ == '__main__':
     p = SafeRLController('aliengo')
     world_name = 'fast.world'
     use_gui=False#True
-    p.state_estimation = 'imu'  # 'odometry','imu', 'pronto', 'ground_truth' (only sim)
+    p.state_estimation = 'ground_truth'  # 'odometry','imu', 'pronto', 'ground_truth' (only sim)
     # NOTE: in the RL controller, SE NN is used only if state estimation is not pronto
     rl_use_nn_se = p.state_estimation != 'pronto'
-    rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=rl_use_nn_se, debug=False)
+    rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=rl_use_nn_se, debug=False, policy="velocity")
     p.SAVE_BAG = False  #
     vf_frequency = 100  # Hz
     vf_decimation = (1 / p.dt) / (vf_frequency)
@@ -62,8 +62,6 @@ if __name__ == '__main__':
     use_joy = False
     sim_push = True
     allow_push_not_rec = False
-
-
 
     if use_joy:
         joy = JoyManager()
