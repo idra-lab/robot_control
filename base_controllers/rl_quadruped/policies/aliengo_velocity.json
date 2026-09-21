@@ -1,0 +1,37 @@
+{
+    "_comment": "Deployment contract shared by EVERY variant listed in onnx_variants below - there is deliberately one contract file, not one per network, because the variants agree on the observation layout, the action space, q_default, action_scale, the gains and the rate. That agreement is what lets the controller keep a single observation history and switch networks under it mid-stride, so splitting this into per-variant files would invite the two copies to drift apart and quietly break the hand-over. The controller checks each network's input and output widths against these numbers at load time. Trained with safe_rl/tasks/manager_based/velocity (Rl-Velocity-Aliengo). Joint order is the Isaac 'locosim_joint_names' order, which is identical to conf.robot_params['aliengo']['joint_names'].",
+    "onnx_variants": {
+        "normal": "aliengo_velocity_normal.onnx",
+        "safe": "aliengo_velocity_safe.onnx"
+    },
+    "obs_dim": 228,
+    "num_actions": 12,
+    "history_length": 5,
+    "policy_rate": 50.0,
+    "action_scale": 0.2,
+    "q_default": [
+        0.0, 0.9, -1.8,
+        0.0, 0.9, -1.8,
+        0.0, 0.9, -1.8,
+        0.0, 0.9, -1.8
+    ],
+    "kp": 35.0,
+    "kd": 0.5,
+    "obs_layout": [
+        ["velocity_commands", 3, 1],
+        ["imu_lin_acc", 3, 5],
+        ["imu_ang_vel", 3, 5],
+        ["imu_projected_gravity", 3, 5],
+        ["joint_pos_rel", 12, 5],
+        ["joint_vel_rel", 12, 5],
+        ["actions", 12, 5]
+    ],
+    "notes": {
+        "normalization": "The empirical observation normalizer is baked into the ONNX graph (Sub/Div on 'obs'), so raw observations must be fed.",
+        "imu_lin_acc": "Isaac ImuCfg.gravity_bias defaults to (0,0,9.81) in world frame, so this term is the specific force measured by a real accelerometer: feed the bias-corrected accelerometer reading, do NOT subtract gravity.",
+        "imu_projected_gravity": "Unit gravity direction in base frame, b_R_w @ (0,0,-1); level base gives (0,0,-1).",
+        "history": "Each history block is oldest frame first, newest last, flattened as (history_length, width).",
+        "actions": "Raw (pre-scale) network outputs of the previous control steps; zeros before the first inference.",
+        "onnx_variants": "Actors sharing this exact observation/action contract, so the controller can switch between them without disturbing the history. 'normal' tracks the operator velocity command (Rl-Velocity-Aliengo); 'safe' comes from UnitreeAliengoEnvSafeEnvCfg, which is the same env with the command range pinned to zero and far more aggressive reset poses, velocities and pushes - a stand-still recovery policy. Feed 'safe' a zero command, which is the only one it ever saw."
+    }
+}
