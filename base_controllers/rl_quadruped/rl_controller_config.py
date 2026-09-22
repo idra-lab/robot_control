@@ -92,7 +92,7 @@ DEFAULTS = {
     "kp_stand": np.array([100., 100., 100.] * 4),
     "kd_stand": np.array([1.0, 1.0, 1.0] * 4),
     # While the policy drives.  None takes the values the policy was trained with, read from the
-    # policy's json (Isaac DelayedPDActuatorCfg: stiffness 35, damping 0.5).  Overriding these is a
+    # policy's json (Isaac DelayedPDActuatorCfg: stiffness 25, damping 0.5).  Overriding these is a
     # deliberate departure from training - the soft damping is what the policy expects.
     "kp_rl": None,
     "kd_rl": None,
@@ -210,7 +210,7 @@ DEFAULTS = {
     # number can be seen from outside.  False never reads it and never runs it - one three-layer
     # forward pass less per inference tick - and makes 'publish_estimated_velocity' moot, since
     # there is then nothing to publish.  Also on the command line as --no-estimator.
-    "estimate_base_velocity": False,
+    "estimate_base_velocity": True,
     # Time every inference tick and publish policy/infer_ms and policy/infer_over_budget.  This is
     # instrumentation, not control.  False drops the two perf_counter calls per inference, both
     # topics, the start-up benchmark and the shutdown timing summary; the benchmark itself still
@@ -302,6 +302,14 @@ DEFAULTS = {
     # 'match' mode that wrote the trained values into Gazebo at start-up; it is gone, because a
     # controller that silently rewrites the physics engine leaves every other tool on the robot
     # looking at a different machine.
+    #
+    # The check covers mass, centre of mass and inertia.  It does *not* cover joint friction, which
+    # is part of the same contract and was the other half of the mismatch: Isaac draws it uniformly
+    # from (0, 0.5) N.m at every reset while aliengo_description had it at exactly zero, and a
+    # frictionless robot over-rotates - 0.67 rad/s against a 0.5 rad/s yaw command, which Isaac
+    # reproduces at 0.64 when its own friction is switched off.  const.xacro now carries 0.25 N.m,
+    # the middle of the trained range, and that is where it belongs; there is nothing to check here
+    # because Gazebo does not report joint friction back.
     "training_model_check": "warn",     # 'warn' | 'off'
     # Relative inertia difference below which two bodies count as the same.
     "training_model_tol": 0.02,

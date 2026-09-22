@@ -284,6 +284,7 @@ class RlQuadrupedController(BaseController):
         print(colored(f"Safe stop will run the '{self.safe_variant}' variant "
                       f"({os.path.basename(self.policy.networks[self.safe_variant].model_path)}) "
                       f"with the command held at zero", "yellow"))
+        self._warnIfSafeVariantIsACopy()
 
         if self.cfg["kp_rl"] is None:
             self.cfg["kp_rl"] = np.full(self.robot.na, self.policy.kp)
@@ -326,6 +327,39 @@ class RlQuadrupedController(BaseController):
         self._rss_baseline_mb = self._rssMb()
         print(colored(f"RlQuadrupedController ready (resident memory "
                       f"{self._rss_baseline_mb:.1f} MB)", "green"))
+
+    def _warnIfSafeVariantIsACopy(self):
+        """Say so when the safe stop is the walking policy under another filename.
+
+        Two different files is the whole premise of the safe stop: the operator reaches for it when
+        something is already going wrong, and what makes it worth reaching for is that it was
+        trained on zero command with far harsher resets and pushes, so it covers failures the
+        walking policy shares rather than repeating them.  Copying one file over the other is a
+        perfectly reasonable placeholder while the recovery task is retrained - it still holds
+        station - but it is invisible from the outside, and 'the fallback is the thing it was
+        supposed to fall back from' is not something to discover mid-run.
+        """
+        import hashlib
+
+        def digest(name):
+            with open(self.policy.networks[name].model_path, "rb") as handle:
+                return hashlib.md5(handle.read()).hexdigest()
+
+        default = self.policy.default_variant
+        if self.safe_variant == default:
+            return
+        try:
+            if digest(self.safe_variant) != digest(default):
+                return
+        except OSError:
+            return
+        print(colored(
+            f"WARNING: the '{self.safe_variant}' network is byte-for-byte identical to "
+            f"'{default}'. The safe stop will hold station, but it is the walking policy at zero "
+            f"command, not a recovery policy - it shares the walking policy's failure modes "
+            f"instead of covering them. Export the recovery task over "
+            f"{os.path.basename(self.policy.networks[self.safe_variant].model_path)} to restore "
+            f"it.", "red", attrs=["bold"]))
 
     def _initCommandMessage(self):
         """Preallocate the /command message and the clipping bounds.
@@ -951,11 +985,17 @@ class RlQuadrupedController(BaseController):
     # observations
     # ---------------------------------------------------------------------------------------------
     def imu_lin_acc(self):
-        """Specific force in the base frame, bias removed.
+        """Specific force in the base frame, bias removed - the accelerometer, as it reads.
 
-        Isaac's ``ImuCfg.gravity_bias`` defaults to ``(0, 0, 9.81)`` in the world frame, so
-        ``imu_lin_acc`` during training is what a real accelerometer reads - gravity included.  The
-        only correction needed here is the sensor bias measured in :meth:`_calibrate`.
+        Gravity is *not* subtracted: a real accelerometer measures specific force, so a level robot
+        reads about ``(0, 0, +9.81)``.  The only correction here is the sensor bias measured in
+        :meth:`_calibrate`.
+
+        This is the honest measurement and not, by itself, the policy's ``imu_lin_acc`` observation
+        term: the training sensor reported something else (see ``imu_lin_acc_model`` in the policy
+        contract and :meth:`VelocityPolicy._imuLinAcc`).  Converting one into the other is
+        :class:`VelocityPolicy`'s business, which is why this is handed to it raw, on every control
+        tick - the conversion needs the samples between inferences, not only the ones on them.
         """
         return self.baseLinAccB - self.imu_utils.IMU_accelerometer_bias
 
@@ -1651,6 +1691,13 @@ class RlQuadrupedController(BaseController):
         self._msg_proj_grav = Vector3Stamped()
         self._msg_ang_vel = Vector3Stamped()
         self._msg_rpy = Vector3Stamped()
+        # The accelerometer as the *network* sees it, which for these policies is not the
+        # accelerometer as the robot reads it - see imu_lin_acc_model in the policy contract.  Two
+        # topics rather than one, because the interesting failure is exactly the two disagreeing in
+        # the wrong way, and that is unreadable if only one of them is recorded.  Published at the
+        # policy rate, since that is when it changes.
+        self.pub_imu_acc_obs = publisher("policy/imu_lin_acc", Vector3Stamped)
+        self._msg_imu_acc_obs = Vector3Stamped()
 
         # loop health and memory, as separate scalars so each is one named series in PlotJuggler
         self.pub_loop_mean = publisher("loop/dt_mean_ms", Float64)
@@ -1720,6 +1767,11 @@ class RlQuadrupedController(BaseController):
             # A plain list assignment here would allocate; the slice refills the existing one.
             self._msg_action.data[:] = self.rl_action
             self.pub_action.publish(self._msg_action)
+            observed = self.policy.imu_lin_acc_obs
+            self._msg_imu_acc_obs.header.stamp = stamp
+            (self._msg_imu_acc_obs.vector.x, self._msg_imu_acc_obs.vector.y,
+             self._msg_imu_acc_obs.vector.z) = observed
+            self.pub_imu_acc_obs.publish(self._msg_imu_acc_obs)
             if self.publish_estimate:
                 estimate = self.policy.estimated_base_lin_vel
                 self._msg_estimate.header.stamp = stamp

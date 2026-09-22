@@ -20,6 +20,11 @@ Every history block is stored oldest-frame-first / newest-frame-last, which is w
 push that buffer replicates the sample across all slots, so :meth:`VelocityPolicy.reset` fills each
 proprioceptive block with the current measurement and leaves the action block at zero.
 
+``imu_lin_acc`` is **not** the accelerometer reading, and it is the one term that has to be modelled
+rather than measured - see :meth:`VelocityPolicy._imuLinAcc` and the ``imu_lin_acc_model`` entry of
+the contract.  Feeding the raw accelerometer there is what makes an otherwise correct deployment
+walk drunk, because the actor's velocity estimate is driven by this term.
+
 The observation normalizer is baked into the ONNX graph, so raw (un-normalized) observations are fed.
 
 The base linear velocity the actor regresses internally is not a graph output, so it cannot be read
@@ -381,6 +386,15 @@ class VelocityPolicy:
         self._ready = False
         self.inference_count = 0
 
+        # --- the imu_lin_acc model ---------------------------------------------------------------
+        # The one observation term that is not simply the corresponding measurement; see
+        # _imuLinAcc.  The specific force is accumulated over the decimation window and turned
+        # into the training quantity once per inference tick, so the buffers live here.
+        self._configureImuModel(verbose=verbose)
+        self._acc_sum = np.zeros(3)
+        self._acc_count = 0
+        self.imu_lin_acc_obs = np.zeros(3)
+
         # --- inference-tick timing ---------------------------------------------------------------
         # The policy is synchronous: an inference tick computes the action and returns the joint
         # target on the same control tick, so there is no way to act on a stale action.  What can
@@ -445,6 +459,106 @@ class VelocityPolicy:
                   f"tick timing {'on' if self.measure_timing else 'off'}")
 
     # ------------------------------------------------------------------------------------------
+    # the imu_lin_acc model
+    # ------------------------------------------------------------------------------------------
+    def _configureImuModel(self, verbose=True):
+        """Read ``imu_lin_acc_model`` from the contract and resolve it to a gain.
+
+        Three kinds are understood.  Each resolves to a gain and to whether the specific force is
+        averaged over the policy step or taken as it reads on the inference tick - and the second
+        half of that is not a detail, because a term defined as a velocity difference across the
+        step *is* an average over it, however the environment computes it.
+
+        ``specific_force``
+            The accelerometer reading on the inference tick, unmodified.  The literal reading of
+            the name, and the behaviour of any contract that does not mention the term at all.
+
+        ``mean_specific_force``
+            The accelerometer averaged over the policy step.  This is what an IMU-correct Isaac
+            environment would produce - the sensor still differentiates the base velocity, it just
+            divides by the interval it actually differenced - so it is what a policy retrained
+            after fixing the sensor should declare.
+
+        ``isaac_lazy_finite_difference``
+            What :class:`isaaclab.sensors.Imu` actually produced for these networks.  It
+            differentiates the base velocity, but the difference and the divisor are taken over
+            different intervals: the sensor buffer is lazy (``update_period`` 0 and
+            ``history_length`` 0 mean it is only recomputed when ``.data`` is read, which the
+            observation manager does once per *control* step), while the divisor is the last ``dt``
+            handed to ``update()``, which is the *physics* step.  The dynamic part of the signal
+            therefore comes out scaled by ``control_dt / physics_dt`` - 4 for this task - while the
+            ``gravity_bias`` added afterwards is not scaled at all.  Measured on the trained
+            environment: the ratio of the reported dynamic acceleration to the true one is 3.99,
+            and reported == (v(t) - v(t-20ms)) / 5ms + (0,0,9.81) to 0.03 m/s^2.
+
+        This is a training-environment artefact and not something to be proud of, but it is part of
+        the contract these networks were fitted to: the actor regresses the base velocity from this
+        term, so a deployment that feeds a true accelerometer hands the estimator a signal four
+        times too small and the robot oscillates.  Fix it in the environment and retrain, and the
+        contract file is where that gets recorded - set ``kind`` to ``specific_force``, and nothing
+        else here has to change.
+        """
+        model = self.cfg.get("imu_lin_acc_model") or {"kind": "specific_force"}
+        kind = model.get("kind", "specific_force")
+        self.imu_acc_gravity = float(model.get("gravity", 9.81))
+        if kind == "specific_force":
+            self.imu_acc_scale, self.imu_acc_average = 1.0, False
+        elif kind == "mean_specific_force":
+            self.imu_acc_scale, self.imu_acc_average = 1.0, True
+        elif kind == "isaac_lazy_finite_difference":
+            physics_dt = float(model["physics_dt"])
+            scale = self.policy_dt / physics_dt
+            if abs(scale - round(scale)) > 1e-9:
+                raise ValueError(
+                    f"imu_lin_acc_model: the policy period {self.policy_dt * 1e3:.3f} ms is not an "
+                    f"integer multiple of the training physics step {physics_dt * 1e3:.3f} ms, so "
+                    f"the sensor's decimation is not {scale:.4f} and this model does not apply")
+            self.imu_acc_scale, self.imu_acc_average = float(round(scale)), True
+        else:
+            raise ValueError(
+                f"Unknown imu_lin_acc_model kind '{kind}'; expected 'specific_force', "
+                f"'mean_specific_force' or 'isaac_lazy_finite_difference'")
+        self.imu_acc_kind = kind
+        self._pg_gain = (self.imu_acc_scale - 1.0) * self.imu_acc_gravity
+        self._acc_scratch = np.zeros(3)
+        if verbose:
+            over = ("the mean specific force over the policy step" if self.imu_acc_average
+                    else "the specific force on the inference tick")
+            if self.imu_acc_scale == 1.0:
+                print(f"VelocityPolicy: imu_lin_acc is {over}, unscaled")
+            else:
+                print(f"VelocityPolicy: imu_lin_acc is modelled as {self.imu_acc_scale:.0f} * "
+                      f"{over} {self._pg_gain:+.2f} * projected_gravity, reproducing the "
+                      f"{self.imu_acc_scale:.0f}x scaling of the training IMU")
+
+    def _imuLinAcc(self, specific_force, projected_gravity_b, out=None):
+        """The ``imu_lin_acc`` observation term, from a measured specific force.
+
+        With ``f`` the accelerometer reading in the base frame (gravity included, so ``(0,0,g)``
+        when level), ``a`` the true base acceleration and ``R`` the world-to-base rotation,
+        ``f = R(a + g_up)`` with ``g_up = (0,0,9.81)``.  The training sensor reported
+        ``R(k a + g_up)``, so::
+
+            obs = k f - (k - 1) R g_up = k f + (k - 1) g * projected_gravity
+
+        since ``projected_gravity = R (0,0,-1)``.  ``k = 1`` leaves the reading alone.
+
+        ``specific_force`` is the *mean* over the policy step, because the training quantity is
+        ``k`` times the average acceleration over that step, not ``k`` times the instantaneous one.
+        Measured against ground truth in Gazebo, averaging takes the reconstruction error from
+        (1.10, 0.60, 2.37) to (0.44, 0.37, 0.97) m/s^2 rms on a signal of (4.1, 3.7, 7.6) std.
+        """
+        out = np.empty(3) if out is None else out
+        if self.imu_acc_scale == 1.0:
+            out[:] = specific_force
+            return out
+        # Through preallocated buffers, because this runs on the control tick.
+        np.multiply(projected_gravity_b, self._pg_gain, out=self._acc_scratch)
+        np.multiply(specific_force, self.imu_acc_scale, out=out)
+        out += self._acc_scratch
+        return out
+
+    # ------------------------------------------------------------------------------------------
     # history helpers
     # ------------------------------------------------------------------------------------------
     def _fill(self, name, value):
@@ -471,8 +585,17 @@ class VelocityPolicy:
         :class:`CircularBuffer` replicates its first sample) and the action block with zeros, because
         the action buffer is zeroed on reset and the first observation is computed before any action
         has been applied.
+
+        ``lin_acc_b`` is the accelerometer reading - specific force in the base frame, gravity
+        included - on every entry point of this class; :meth:`_imuLinAcc` turns it into the term the
+        network was trained on.  Seeding from the instantaneous reading is deliberate: Isaac's own
+        first post-reset sample is meaningless (it differentiates against a zeroed velocity), and a
+        standing robot gives the same ``(0, 0, g)`` either way.
         """
-        self._fill("imu_lin_acc", np.asarray(lin_acc_b, dtype=np.float32))
+        self._acc_sum[:] = 0.0
+        self._acc_count = 0
+        self._fill("imu_lin_acc",
+                   self._imuLinAcc(lin_acc_b, projected_gravity_b, out=self.imu_lin_acc_obs))
         self._fill("imu_ang_vel", np.asarray(ang_vel_b, dtype=np.float32))
         self._fill("imu_projected_gravity", np.asarray(projected_gravity_b, dtype=np.float32))
         self._fill("joint_pos_rel", (np.asarray(q, dtype=np.float64) - self.q_default).astype(np.float32))
@@ -496,9 +619,18 @@ class VelocityPolicy:
 
         Call this every control tick.  The network is evaluated once every :attr:`decimation` ticks
         and the target is held in between, mirroring the ``decimation = 4`` of the training env.
+
+        ``lin_acc_b`` is the accelerometer reading (specific force in the base frame, gravity
+        included) and is consumed on *every* tick even though the network only runs on one in
+        :attr:`decimation`: the training term is an average over the policy step, so the samples in
+        between are not spare, they are the signal.  See :meth:`_imuLinAcc`.
         """
         if not self._ready:
             raise RuntimeError("VelocityPolicy.reset() must be called before step()")
+
+        if self.imu_acc_average:
+            self._acc_sum += lin_acc_b
+            self._acc_count += 1
 
         if self._decimation_counter == 0:
             tick_start = perf_counter() if self.measure_timing else 0.0
@@ -507,7 +639,15 @@ class VelocityPolicy:
 
             # Measured terms for this step.  The newest frame of the action block is still the
             # action produced by the previous inference, which is what mdp.last_action reports.
-            self._push("imu_lin_acc", np.asarray(lin_acc_b, dtype=np.float32))
+            if self.imu_acc_average:
+                self._acc_sum /= self._acc_count
+                specific_force = self._acc_sum
+            else:
+                specific_force = lin_acc_b
+            self._push("imu_lin_acc", self._imuLinAcc(specific_force, projected_gravity_b,
+                                                      out=self.imu_lin_acc_obs))
+            self._acc_sum[:] = 0.0
+            self._acc_count = 0
             self._push("imu_ang_vel", np.asarray(ang_vel_b, dtype=np.float32))
             self._push("imu_projected_gravity", np.asarray(projected_gravity_b, dtype=np.float32))
             self._push("joint_pos_rel",

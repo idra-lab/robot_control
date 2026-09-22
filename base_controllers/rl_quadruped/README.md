@@ -63,10 +63,10 @@ python3 rl_quadruped_controller.py --real --input joy # real robot
 | `--policy NAME` | robot name | Policy basename under `policies/`, without the `_velocity` suffix — `--policy aliengo` loads `aliengo_velocity.json`, and every ONNX file its `onnx_variants` names. Use it to A/B two exported policy sets. |
 | `--input {keyboard,joy,none}` | `keyboard` | Operator input. `keyboard` needs a real tty, so start it from `lab_locosim`/`dock-other`, not from a pipe. `joy` restarts the ROS `joy_node` and reads `/joy`. `none` accepts no input — the machine waits in `FOLD` until something posts events programmatically. |
 | `--real` | off | Run on hardware. Pings the robot's IP first and exits if it does not answer; folds in the `real` sub-dict of the robot config (slower motions, softer collapse, tighter command limits); enables joint-limit clipping and real-time tuning; subscribes to the split hardware IMU topics instead of Gazebo's single one; and skips the simulation spawn fix. |
-| `--world NAME` | config `world_name` (`fast.world`) | Gazebo world, resolved inside `ros_impedance_controller/worlds/`. Ignored with `--real`. |
+| `--world NAME` | config `world_name` (`rl_flat.world`) | Gazebo world, resolved inside `ros_impedance_controller/worlds/`. Ignored with `--real`. Note that Gazebo **does not complain** about a world file that is not there: it silently starts its own default world instead, with a 1 mm contact surface layer and gravity 9.80. If you point this at a name that does not exist you will get a working simulation of a slightly different planet. |
 | `--rviz` / `--no-rviz` | config `use_rviz` (**on**) | Start rviz with the simulator. On by default: it is the intended way to look at the robot, and it renders from the published TF and markers rather than driving the physics window. `--no-rviz` takes one process out of contention, for timing work or a loaded real-robot control PC. See [rviz and TF](#rviz-and-the-world-transform) — the controller has to publish `world -> base_link` itself. |
 | `--gui` | off | Show the Gazebo GUI. Off by default because the GUI competes with the control loop for the machine; rviz is off either way. |
-| `--skip-calibration` | off | Skip the accelerometer-bias measurement entirely. The bias stays at zero, and since the policy consumes raw specific force that offset goes straight into the observation it acts on — so this is a bring-up switch, not a shortcut for a run you intend to trust. Also `skip_calibration` in the config. |
+| `--skip-calibration` | off | Skip the accelerometer-bias measurement entirely. The bias stays at zero and goes straight into the observation the policy acts on — **multiplied by four**, since the [`imu_lin_acc` model](#the-imu_lin_acc-term-the-one-observation-that-has-to-be-modelled) scales the reading. So this is a bring-up switch, not a shortcut for a run you intend to trust. Also `skip_calibration` in the config. |
 | `--bag [PREFIX]` | off | Record a rosbag of the joint topics and all telemetry topics for the whole run, closing it cleanly on exit. Optional filename prefix, default `rl_<robot>`. |
 | `--no-telemetry` | off | Stop publishing the telemetry topics. Only useful for isolating whether publishing costs you timing — nothing is logged in memory either way. |
 | `--no-estimator` | config `estimate_base_velocity` (**on**) | Stop evaluating the actor's state-estimation head. The `estimated_base_lin_vel` topic is not advertised and the estimate stays at zero. **The policy is unaffected** — it consumes its own estimate inside the ONNX graph either way; what goes away is only the second, external evaluation that exists so the number can be seen. Worth ~110 µs of every 20 ms inference tick. |
@@ -195,7 +195,7 @@ was two names for one behaviour and one more transition to read in a log.
   `current → q_fold → q_stand`; tucking the feet under the body first is what makes it work from a
   sprawled pose. `q_stand` defaults to the policy's own training posture `[0, 0.9, -1.8] × 4`.
 * **RL** runs the walking policy at 50 Hz on top of the faster loop. Gains switch to the values
-  the policy was trained with (kp 35, kd 0.5) and **the policy has the robot from its first tick**:
+  the policy was trained with (kp 25, kd 0.5) and **the policy has the robot from its first tick**:
   the operator's command is live immediately and the joint target the network returns is applied as
   it comes — see [Immediate hand-over](#immediate-hand-over-no-ramps-no-blends).
 * **SAFE_STOP** runs a *second network* with the command held at zero — see below. Not the
@@ -269,7 +269,9 @@ The observation is 228 floats in exactly the declaration order of the training `
 ```
 
 Each history block is oldest-frame-first, matching `isaaclab.utils.buffers.CircularBuffer.buffer`.
-Action output is `q_des = q_default + 0.2 · action`.
+Action output is `q_des = q_default + 0.5 · action`, matching `JointPositionActionCfg(scale=0.5,
+use_default_offset=True)` in the task. Verified against a rollout: `default_joint_pos + 0.5 · action`
+is `joint_pos_target` to the last bit.
 
 **Both variants share this contract exactly** — same observation, same action space, same
 `q_default` and `action_scale`, since `UnitreeAliengoEnvSafeEnvCfg` changes only the command range,
@@ -287,12 +289,10 @@ Three details that had to line up and do:
 
 * **The observation normalizer is inside the ONNX graph** (`Sub`/`Div` on the `obs` input), so raw
   observations are fed. Do not normalize before the call.
-* **`imu_lin_acc` is specific force, gravity included.** Confirmed in IsaacLab's own source, where
-  the Imu sensor computes
-  `lin_acc_w = (lin_vel_w - prev_lin_vel_w) / dt + gravity_bias_w` with `ImuCfg.gravity_bias`
-  defaulting to `(0, 0, 9.81)` — so the training signal is a finite-differenced velocity plus
-  gravity, i.e. what a real accelerometer reads. Only the sensor bias is removed on deployment;
-  gravity is *not* subtracted. Measured in Gazebo: `|acc| = 9.81` exactly while resting.
+* **`imu_lin_acc` is not the accelerometer reading.** It is close enough to one to be mistaken for
+  it, and that mistake is what made the deployed robot oscillate — see
+  [The `imu_lin_acc` term](#the-imu_lin_acc-term-the-one-observation-that-has-to-be-modelled), which
+  is the single most important section of this document.
 * **Joint order needs no permutation.** The task declares its joints as `locosim_joint_names`
   (`FL, RL, FR, RR` × `hip, thigh, calf`), which is element-for-element
   `conf.robot_params['aliengo']['joint_names']` (`lf, lh, rf, rh` × `haa, hfe, kfe`).
@@ -305,16 +305,155 @@ one could not be:
 
 | term | verified by |
 |---|---|
-| `imu_lin_acc` | IsaacLab source (the `lin_acc_w` expression above) *and* measurement |
+| `imu_lin_acc` | IsaacLab source *and* a rollout of the trained environment — see the section below; the source alone was read wrongly once |
 | `imu_ang_vel` | IsaacLab source (`imu_ang_vel` returns `data.ang_vel_b`, the sensor frame) *and* measurement against ground truth, r = 0.997 / 0.999 / 1.000 |
-| `imu_projected_gravity` | **measurement only** — 1.6e-4 RMS against ground truth, plus the base-height cross-check above |
+| `imu_projected_gravity` | IsaacLab source (`imu_projected_gravity` returns `data.projected_gravity_b`, the normalised world gravity direction rotated into the sensor frame) *and* measurement — 1.6e-4 RMS against ground truth, plus the base-height cross-check above. A rollout of the trained environment confirms it equals the base's own `projected_gravity_b` to 2e-7 |
 
-`imu_projected_gravity` is not defined in any IsaacLab checkout on this machine, so `safe_rl` builds
-against a newer one that is not available here. The convention used on deployment — unit
-`b_R_w @ (0, 0, -1)`, so a level base gives `(0, 0, -1)` — is therefore inferred from measurement
-rather than confirmed from source. It is consistent with everything measured, but if the policy is
-ever retrained against a version that changed this term (normalised or not, sign, sensor vs base
-frame), this is the one line of the contract that would not announce the change.
+The way to settle a question like this is not to read the sensor's source and reason about it — that
+is exactly how the `imu_lin_acc` term below went wrong — but to **roll the trained environment out
+and look at the numbers**, which is now possible on this machine:
+
+```bash
+conda activate env_isaaclab
+cd ~/Documents/safe/safe_rl/scripts/rsl_rl
+python play.py --task Rl-Velocity-Aliengo-Play --headless \
+    --checkpoint ~/Documents/safe/safe_rl/logs/rsl_rl/unitree_aliengo_velocity/aliengo_velocity_normal/model_45500.pt
+```
+
+Logging `obs["policy"]` alongside `scene["imu"].data`, `robot.data` and the action, and then
+checking each block of the 228 against the quantity it is supposed to be, is how every line of the
+table above was confirmed. It takes a few minutes and it answers the question rather than arguing
+it.
+
+### The `imu_lin_acc` term: the one observation that has to be modelled
+
+> **Current status:** the networks shipped here are trained against a **fixed** Isaac IMU and use
+> `"kind": "specific_force"` — the accelerometer is fed through unmodified. Everything below is the
+> history of how that came to be, kept because it is why this field exists at all, and because the
+> `isaac_lazy_finite_difference` mode is still what you need to replay anything trained before
+> September 2026.
+
+**This term was not the accelerometer reading, and feeding the accelerometer into it is what made
+the robot walk drunk.**
+
+`isaaclab.sensors.Imu` differentiates the base velocity, but it takes the difference and the
+divisor over *different intervals*:
+
+```python
+lin_acc_w = (lin_vel_w - self._prev_lin_vel_w) / self._dt + self._gravity_bias_w
+```
+
+`self._dt` is the last `dt` handed to `update()`, which is the **physics** step — 5 ms. But
+`_prev_lin_vel_w` is only refreshed when `_update_buffers_impl` runs, and with `update_period = 0`
+and `history_length = 0` (both `ImuCfg` defaults, and the task overrides neither) `SensorBase.update`
+never recomputes the buffer itself: it only marks it outdated, and the recompute happens on the
+first read of `.data`. The only reader is the observation manager, once per **control** step — 20 ms.
+So the difference spans four physics steps and is divided by one:
+
+> the dynamic part of `imu_lin_acc` is scaled by `control_dt / physics_dt` = **4**, and the
+> `(0, 0, 9.81)` gravity bias added afterwards is not scaled at all.
+
+Measured on a 400-step rollout of the trained environment, against ground truth:
+
+| check | result |
+|---|---|
+| `(v(t) − v(t−20 ms)) / 5 ms + (0,0,9.81)`, rotated into the base frame, vs the reported term | mean error **0.029 m/s²** |
+| the same with the textbook divisor (20 ms) | mean error 1.66 m/s² |
+| \|reported dynamic acc\| / \|true dynamic acc\| | median **3.99** |
+
+The term the policy was trained on therefore has a standard deviation of (1.9, 2.0, **7.1**) m/s²
+while the Aliengo's accelerometer, walking the same gait, reads (1.2, 1.2, **2.0**). The actor
+regresses its own base velocity from this term, so feeding it the true accelerometer hands the
+estimator a signal four times too small in exactly the channel it depends on.
+
+**What the deployment does.** With `f` the accelerometer reading in the base frame (gravity
+included), `a` the true base acceleration, `R` the world-to-base rotation and `g_up = (0,0,9.81)`,
+`f = R(a + g_up)` while the training sensor reported `R(k·a + g_up)` with `k = 4`. Subtracting:
+
+```
+imu_lin_acc = k · mean(f over the policy step) + (k − 1) · 9.81 · projected_gravity
+```
+
+`mean` and not the instantaneous value, because the training quantity is `k` times the *average*
+acceleration across the step: `VelocityPolicy.step` is handed the accelerometer on every one of the
+ten control ticks and averages them, and the samples between inferences are not spare, they are the
+signal. Checked in Gazebo against ground truth over 885 inference ticks of walking:
+
+| what is fed | RMS error vs the Isaac-equivalent quantity | per-axis correlation |
+|---|---|---|
+| `4·mean(f) + 3g·projected_gravity` | 0.44, 0.37, 0.97 m/s² | **0.994, 0.995, 0.992** |
+| the same, rotating each sample through the world frame first | 0.44, 0.34, 0.97 m/s² | 0.994, 0.996, 0.992 |
+| `4·f(t) + 3g·projected_gravity`, no averaging | 1.10, 0.60, 2.37 m/s² | 0.971, 0.987, 0.950 |
+| **the raw accelerometer — what this controller fed before** | **3.08, 2.75, 5.94 m/s²** | 0.958, 0.916, 0.951 |
+
+against a signal whose own standard deviation is (4.1, 3.7, 7.6). Rotating the samples through the
+world frame before averaging buys nothing at these rates, so the cheap body-frame mean is what runs.
+
+**It lives in the policy contract, not in the code.** `aliengo_velocity.json` carries
+
+```json
+"imu_lin_acc_model": { "kind": "specific_force", "physics_dt": 0.002, "gravity": 9.81 }
+```
+
+and for the scaling kind `VelocityPolicy` resolves `k` from it as `policy_dt / physics_dt`. That is
+deliberate: it is a property of the networks in that file, not of this robot or this controller, so
+it travels with them. Three kinds are understood, and each resolves to a gain *and* to whether the
+accelerometer is averaged over the policy step:
+
+| `kind` | gain | averaged | when |
+|---|---|---|---|
+| `specific_force` | 1 | no | the term really is the accelerometer at the inference tick. Also what a contract with no `imu_lin_acc_model` at all is taken to mean, so older contracts keep their behaviour |
+| `mean_specific_force` | 1 | yes | **what a retrain after fixing the sensor should declare.** A sensor that divides by the interval it actually differenced still reports the mean across the control step, not the instantaneous reading — the factor of four goes away, the averaging does not |
+| `isaac_lazy_finite_difference` | `policy_dt / physics_dt` | yes | these networks |
+
+`VelocityPolicy` prints
+which model it resolved at start-up, and the controller publishes both signals, the sensor on
+`rl/imu_lin_acc` and the modelled term on `rl/policy/imu_lin_acc`, because the interesting failure
+is the two disagreeing in the wrong direction.
+
+**It is fixed in IsaacLab itself**, which is where it belongs: reproducing a sensor artefact on
+the robot is a workaround, and the next training run should be fitted to a term the robot can
+actually measure. `isaaclab.sensors.Imu._update_buffers_impl` now divides by the interval it
+actually differenced — the sensor knows it, from its own timestamps — and IsaacLab's own
+`test_imu.py` passes unchanged. On top of that, `safe_rl.sensors.ImuCfg.finite_difference`
+(default `physics_step`) decides how often that interval restarts, with one mode per `kind` here:
+
+| `safe_rl` `ImuCfg.finite_difference` | this contract's `kind` |
+|---|---|
+| `physics_step` (the new default) | `specific_force` |
+| `control_step` | `mean_specific_force` |
+| `upstream` | `isaac_lazy_finite_difference` — replay only, for anything trained before the fix |
+
+Measured on a rollout, the ratio of reported to true dynamic acceleration goes from **3.99** to
+1.03, and the term's standard deviation from (1.9, 2.0, 7.1) to (1.3, 1.3, 2.8) m/s² — against the
+(1.3, 1.3, 2.2) the Aliengo's own accelerometer reads walking the same gait.
+
+Two things to know before retraining. The change **invalidates these checkpoints**: replayed in a
+corrected Isaac environment, `model_45500` rolls 4.10° RMS against 0.27° under `upstream`, with its
+internal velocity estimate off by 0.166 m/s against 0.009 — which is the same failure, at the same
+magnitude, that this controller showed before the model below was added. And a plausible-looking
+alternative does *not* work: setting `imu.update_period` to the physics step changes nothing,
+because `update_period` decides when the buffer is allowed to be stale, never when it is
+recomputed. Measured: identical scaling either way.
+
+That retrain has happened: the networks here come from `physics_step` training and the contract
+says `specific_force`. Verified end to end against an Isaac rollout of the same checkpoint, ground
+friction 0.8 and joint friction 0.25 N·m on both sides:
+
+| phase | source | vx | ω_z | roll | pitch | height | est err |
+|---|---|---|---|---|---|---|---|
+| stand | isaac | -0.000 | -0.000 | 0.02 | 0.01 | 0.335 | 0.009 |
+| stand | gazebo | -0.000 | -0.000 | 0.00 | 0.00 | 0.329 | 0.003 |
+| 0.3 m/s | isaac | +0.297 | -0.007 | 0.41 | 0.19 | 0.340 | 0.017 |
+| 0.3 m/s | gazebo | +0.312 | -0.003 | 0.47 | 0.21 | 0.339 | 0.027 |
+| 0.5 m/s | isaac | +0.492 | -0.012 | 0.30 | 0.20 | 0.336 | 0.020 |
+| 0.5 m/s | gazebo | +0.491 | +0.000 | 0.42 | 0.13 | 0.336 | 0.028 |
+| 0.5 rad/s yaw | isaac | -0.009 | +0.400 | 0.43 | 0.18 | 0.343 | 0.017 |
+| 0.5 rad/s yaw | gazebo | +0.006 | +0.451 | 0.62 | 0.33 | 0.341 | 0.024 |
+
+Lateral tracking, not in the table, is 0.310 against a 0.3 m/s command. `VelocityPolicy` announces
+which model it resolved at start-up — for these networks, *"imu_lin_acc is the specific force on
+the inference tick, unscaled"*.
 
 ### The joint controller underneath
 
@@ -714,7 +853,25 @@ no rotation in both models (`imu_joint` has `rpy="0 0 0" xyz="0 0 0"` onto `trun
 Isaac attaches `ImuCfg` to `/Robot/base` with the default identity offset), and the Gazebo plugin
 publishes in the sensor frame with `rpyOffset 0 0 0`. **The angular velocity transform is correct.**
 
-## Stopping: why the robot sometimes oscillates, and what actually fixes it
+## Stopping: why the robot used to oscillate, and what actually fixed it
+
+> **Resolved.** The rest of this section is the investigation as it stood *before* the
+> [`imu_lin_acc` model](#the-imu_lin_acc-term-the-one-observation-that-has-to-be-modelled) and the
+> two simulation-setup faults below were found, and it is kept because its conclusion was wrong in
+> an instructive way: everything measurable had been eliminated, so the residue was attributed to
+> contact and solver behaviour — "not things a deployment controller can match". It was in fact a
+> term of the observation, and entirely within the controller's reach.
+>
+> With the observation fixed, three consecutive walk-then-stop cycles in the same harness settle to
+> **0.0002–0.0005 rad/s** of residual base rate at 12–16 s, with the knee moving 2–4 mrad and the
+> base height varying 0.03–0.14 mm. Against four clean settles out of seven before, and two
+> non-decaying limit cycles at 0.044 and 0.149 rad/s. The walking policy now kills its own gait, so
+> `auto_safe_stop_after` is no longer needed for that — it stays available, and the safe stop
+> remains the right answer when you want a standstill that actively rejects disturbances.
+>
+> The lesson is the method, not the number. Every elimination below is still correct; what was
+> missing was a rollout of the training environment to check the observation against, rather than
+> reading the sensor's source and reasoning about it.
 
 Commanding zero does not reliably bring the walking policy to rest. Over seven identical Gazebo
 runs of *walk at 0.3 m/s for six seconds, then hold the command at zero*, measuring the residual
@@ -764,6 +921,9 @@ is the contact and solver behaviour: Gazebo/ODE at a 1 ms step against PhysX at 
 different friction and contact stiffness, and a randomised 0–2 policy steps of actuator delay in
 training against roughly zero here. Those are not things a deployment controller can match.
 
+*(That last paragraph is the wrong conclusion, kept as written. What had not been equalised was the
+observation, and one term of it was off by a factor of four. The next section is what closed it.)*
+
 ### What does work
 
 The safe-stop policy settled in **every** run measured — 0.0002 to 0.003 rad/s of residual base
@@ -796,6 +956,71 @@ stick.
 
 The proper fix is on the training side — more standing envs, or a reward that penalises motion at
 zero command — at which point this switch stops being necessary.
+
+## The two simulation-setup faults found alongside it
+
+Neither is in this controller, and both were silent.
+
+**`rl_flat.world` did not exist.** `world_name` has named it since the file that documents it was
+written, and `ros_impedance_controller/worlds/` never contained it. Gazebo does not treat a missing
+world file as an error — it starts its own default world instead, so every run reported here before
+the fix was on **gravity 9.80** (against the 9.81 the policy's gravity bias assumes) and a **1 mm
+`contact_surface_layer`**, the spongy floor the world was created to remove. It exists now. On its
+own it is worth little once the observation is right — roll RMS at 0.3 m/s went 0.54° to 0.51° —
+which is also the correction to the 5.2° → 3.1° improvement once claimed for it: that was measured
+through the broken observation, which amplified everything.
+
+**The Aliengo's joints had exactly zero friction.** `aliengo_description/urdfs/const.xacro` set
+`friction` to 0, which is not a measurement. Isaac draws it uniformly from (0, 0.5) N·m at every
+reset (`EventCfg.joint_friction`; Isaac Sim 5.x models that parameter as a torque), so the policy
+was trained on a robot whose gearboxes resist motion and deployed on one whose gearboxes do not. It
+shows in turning, where the leg motion that produces yaw is small enough that friction eats a
+visible fraction of it — and the two simulators agreed precisely, on the wrong robot:
+
+| yaw command 0.5 rad/s | measured ω_z |
+|---|---|
+| Isaac, joint friction 0 | 0.644 rad/s |
+| **Gazebo, joint friction 0** | **0.672 rad/s** |
+| Isaac, joint friction 0.10 N·m | 0.549 rad/s |
+| Isaac, joint friction 0.25 N·m | 0.439 rad/s |
+| Isaac, as trained (random 0–0.5) | 0.411 / 0.487 / 0.507 / 0.511 rad/s across four seeds |
+
+`const.xacro` now carries 0.25 N·m, the middle of the trained range. Armature was checked and left
+alone: 0.005 kg·m², the middle of Isaac's range, moves the same number from 0.644 to 0.616, and
+Gazebo/ODE has nowhere to put it.
+
+### Where the two simulators now stand
+
+Same policy, same commands; Isaac at the matched friction (ground 0.8, joints 0.25 N·m), Gazebo
+after all three fixes. Roll and pitch are degrees RMS, "est err" is how far the actor's internal
+base-velocity estimate is from the truth, in m/s:
+
+| phase | source | vx | vy | ω_z | roll | pitch | height | est err |
+|---|---|---|---|---|---|---|---|---|
+| stand | isaac | +0.000 | +0.000 | −0.000 | 0.04 | 0.03 | 0.337 | 0.011 |
+| stand | **gazebo** | +0.000 | −0.000 | +0.000 | 0.02 | 0.02 | 0.327 | 0.010 |
+| 0.3 m/s | isaac | +0.292 | −0.003 | −0.013 | 0.28 | 0.13 | 0.335 | 0.014 |
+| 0.3 m/s | gazebo *before* | +0.317 | +0.005 | −0.011 | **4.05** | **2.07** | 0.338 | **0.161** |
+| 0.3 m/s | **gazebo** | +0.313 | +0.001 | −0.005 | 0.39 | 0.09 | 0.334 | 0.022 |
+| 0.5 m/s | isaac | +0.484 | −0.002 | −0.018 | 0.31 | 0.15 | 0.334 | 0.015 |
+| 0.5 m/s | gazebo *before* | +0.522 | −0.009 | +0.015 | **3.21** | **1.67** | 0.337 | **0.130** |
+| 0.5 m/s | **gazebo** | +0.506 | +0.000 | −0.003 | 0.35 | 0.14 | 0.333 | 0.024 |
+| 0.5 rad/s yaw | isaac | −0.008 | +0.003 | +0.434 | 0.32 | 0.14 | 0.339 | 0.015 |
+| 0.5 rad/s yaw | gazebo *before* | +0.064 | −0.051 | +0.560 | **4.61** | **3.11** | 0.343 | **0.224** |
+| 0.5 rad/s yaw | **gazebo** | +0.005 | −0.006 | +0.491 | 0.57 | 0.12 | 0.339 | 0.019 |
+
+Body roll at 0.3 m/s went from 4.05° RMS to 0.39°, against Isaac's 0.28°, and the actor's own
+velocity estimate from 0.161 m/s of error to 0.022, against Isaac's 0.014. What is left is inside
+the spread Isaac itself shows across seeds. `run_sim.py` agrees on the full sequence, including the
+two commands not in the table: lateral 0.3 m/s tracks at 0.309, and the safe-stop hand-over settles
+to 0.2° of roll at 0.354 m.
+
+**The estimate is the diagnostic to watch.** `rl/estimated_base_lin_vel` against reality is the
+single number that says whether the policy is reading the robot correctly, which is why the
+controller can publish it (`estimate_base_velocity`, off by default because it is a second forward
+pass per tick). An error of 0.02 m/s is a policy that knows where it is; 0.16 m/s is a policy
+acting on a wrong belief about its own motion, and that is what a drunk-looking robot looks like
+from the inside.
 
 ## rviz and the world transform
 
@@ -1050,7 +1275,8 @@ Joint data is already on `/command` and `/<robot>/joint_states`, so it is not du
 | `velocity_command` | `geometry_msgs/TwistStamped` | 50 Hz | operator command fed to the policy |
 | `action` | `std_msgs/Float64MultiArray` | 50 Hz | raw policy output, 12 joints in `joint_names` order |
 | `estimated_base_lin_vel` | `geometry_msgs/Vector3Stamped` | 50 Hz | base linear velocity the actor regresses internally, base frame. Not advertised with `--no-estimator` |
-| `imu_lin_acc` | `geometry_msgs/Vector3Stamped` | 100 Hz | bias-corrected specific force, as the policy sees it |
+| `imu_lin_acc` | `geometry_msgs/Vector3Stamped` | 100 Hz | bias-corrected specific force — what the *accelerometer* reads |
+| `policy/imu_lin_acc` | `geometry_msgs/Vector3Stamped` | 50 Hz | the `imu_lin_acc` observation term — what the *network* is fed, which is not the same thing. See [the `imu_lin_acc` term](#the-imu_lin_acc-term-the-one-observation-that-has-to-be-modelled) |
 | `projected_gravity` | `geometry_msgs/Vector3Stamped` | 100 Hz | unit gravity in the base frame |
 | `ang_vel_b` | `geometry_msgs/Vector3Stamped` | 100 Hz | body angular rate |
 | `base_rpy` | `geometry_msgs/Vector3Stamped` | 100 Hz | attitude |
