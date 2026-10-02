@@ -45,6 +45,9 @@ control_params['go1'] = {'Kp_lin_x': 300, 'Kp_lin_y': 300, 'Kp_lin_z': 800,
                        'KpRoll': 50, 'KpPitch': 50, 'KpYaw': 50,
                        'KdRoll': 3, 'KdPitch': 3, 'KdYaw': 3, 'gravity': 9.81}
 
-
+control_params['aliengo'] = {'Kp_lin_x': 500, 'Kp_lin_y': 500, 'Kp_lin_z': 500,
+                       'Kd_lin_x': 100, 'Kd_lin_y': 100, 'Kd_lin_z': 100,
+                       'KpRoll': 200, 'KpPitch': 200, 'KpYaw': 200,
+                       'KdRoll': 20, 'KdPitch': 20, 'KdYaw': 20, 'gravity': 9.81}
 
    
