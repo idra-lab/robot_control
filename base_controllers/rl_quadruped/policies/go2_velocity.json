@@ -1,6 +1,5 @@
 {
-    "_comment": "Deployment contract shared by every network in onnx_variants. The variants agree on the observation layout, action space, q_default, action_scale, gains and rate, which is what lets the controller switch between them mid-stride on a single observation history. Network input/output widths are checked against these numbers at load time. Trained with safe_rl/tasks/manager_based/velocity (Rl-Velocity-Go2). Joint order is the Isaac 'locosim_joint_names' order, identical to ROBOTS['go2']['joint_names'] in rl_controller_config.py.",
-    "trained_for": "go2",
+    "_comment": "Trained in safe_rl (branch feat/pace-actuators), tasks Rl-Velocity-Go2 / Safe-Rl-Go2, on the identified PACE actuator model. 'normal' tracks the velocity command, 'safe' is the zero-command recovery policy resumed from it; both share this contract. Observation normalizer is inside the graph. imu_lin_acc is the accelerometer reading averaged over the policy step. See the README for the observation layout.",
     "onnx_variants": {
         "normal": "go2_velocity_normal.onnx",
         "safe": "go2_velocity_safe.onnx"
@@ -9,15 +8,15 @@
     "num_actions": 12,
     "history_length": 5,
     "policy_rate": 50.0,
-    "action_scale": 0.2,
+    "action_scale": 0.5,
     "q_default": [
         0.0, 0.9, -1.8,
         0.0, 0.9, -1.8,
         0.0, 0.9, -1.8,
         0.0, 0.9, -1.8
     ],
-    "kp": 25.0,
-    "kd": 0.5,
+    "kp": 20.0,
+    "kd": 1.5,
     "obs_layout": [
         ["velocity_commands", 3, 1],
         ["imu_lin_acc", 3, 5],
@@ -27,17 +26,5 @@
         ["joint_vel_rel", 12, 5],
         ["actions", 12, 5]
     ],
-    "imu_lin_acc_model": {
-        "kind": "specific_force",
-        "physics_dt": 0.002,
-        "gravity": 9.81
-    },
-    "notes": {
-        "normalization": "The empirical observation normalizer is baked into the ONNX graph (Sub/Div on 'obs'), so raw observations must be fed.",
-        "imu_lin_acc": "Raw accelerometer reading (specific force) on the inference tick, not averaged. The networks were trained with safe_rl.sensors.ImuCfg.finite_difference = physics_step, which maps to 'specific_force' (control_step -> 'mean_specific_force', upstream -> 'isaac_lazy_finite_difference'). 'physics_dt' is unused by this kind and kept as provenance. A contract without imu_lin_acc_model is read as 'specific_force'.",
-        "imu_projected_gravity": "Unit gravity direction in base frame, b_R_w @ (0,0,-1); level base gives (0,0,-1).",
-        "history": "Each history block is oldest frame first, newest last, flattened as (history_length, width).",
-        "actions": "Raw (pre-scale) network outputs of the previous control steps; zeros before the first inference.",
-        "onnx_variants": "Actors sharing this observation/action contract, so the controller can switch between them without disturbing the history. 'normal' tracks the operator velocity command (Rl-Velocity-Go2); 'safe' is the stand-still recovery policy (Safe-Rl-Go2), trained at zero command with harsher reset poses, velocities and pushes. Feed 'safe' a zero command, the only one it ever saw."
-    }
+    "imu_lin_acc_model": {"kind": "mean_specific_force"}
 }
