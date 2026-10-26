@@ -223,6 +223,8 @@ class QuadrupedController(BaseController):
         self.quaternion[1] = msg.pose.pose.orientation.y
         self.quaternion[2] = msg.pose.pose.orientation.z
         self.quaternion[3] = msg.pose.pose.orientation.w
+        if not self.real_robot:  # no /euler_imu in simulation: take the attitude from ground truth
+            self.euler = np.array(euler_from_quaternion(self.quaternion))
 
         self.basePoseW[self.u.sp_crd["LX"]] = self.basePoseW_legOdom[0]
         self.basePoseW[self.u.sp_crd["LY"]] = self.basePoseW_legOdom[1]
@@ -1819,7 +1821,7 @@ if __name__ == '__main__':
                     # if p.time > (p.startTime + 3.0) and p.time % 3.0 == 0:
                     #     rl_controller.velocity_cmd = np.random.uniform(low=-0.4, high=0.4, size=(3,))
                     #
-                    rl_controller.velocity_cmd = np.array([0.05, 0, 0])
+                    rl_controller.velocity_cmd = np.array([0.3, 0, 0])
                 p.baseTwistW_des[:3] = p.b_R_w.T @ np.append(rl_controller.velocity_cmd[:2], 0.0)
                 p.baseTwistW_des[5] = rl_controller.velocity_cmd[2]
 

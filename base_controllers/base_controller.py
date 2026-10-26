@@ -118,6 +118,12 @@ class BaseController(threading.Thread):
         # clean up previous process
         os.system("killall rosmaster rviz gzserver gzclient")
 
+        # gazebo finds the model plugins of the robot descriptions (e.g. joint armature) only through GAZEBO_PLUGIN_PATH
+        plugin_dir = os.environ['LOCOSIM_DIR'] + '/robot_descriptions/gazebo_plugins/lib'
+        plugin_paths = [p for p in os.environ.get('GAZEBO_PLUGIN_PATH', '').split(':') if p]
+        if plugin_dir not in plugin_paths:
+            os.environ['GAZEBO_PLUGIN_PATH'] = ':'.join([plugin_dir] + plugin_paths)
+
         if launch_file is None:
             if self.custom_locosim_launch_file:
                 launch_file = rospkg.RosPack().get_path('ros_impedance_controller') + '/launch/ros_impedance_controller_' + self.robot_name + '.launch'

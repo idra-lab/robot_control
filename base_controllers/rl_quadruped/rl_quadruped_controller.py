@@ -166,7 +166,6 @@ class RlQuadrupedController(BaseController):
                 sys.exit("Cannot reach the robot")
         else:
             self._fixSpawnHeight()
-            self._addGazeboPluginPath()
 
         args = ["rviz:=" + ("true" if self.use_rviz else "false")]
         if self.real_robot:
@@ -317,16 +316,6 @@ class RlQuadrupedController(BaseController):
     # ---------------------------------------------------------------------------------------------
     # simulation start-up
     # ---------------------------------------------------------------------------------------------
-    @staticmethod
-    def _addGazeboPluginPath():
-        """The descriptions load plugins from locosim's gazebo_plugins/lib (e.g. the joint armature
-        plugin); Gazebo only finds them through GAZEBO_PLUGIN_PATH."""
-        plugin_dir = os.path.join(os.environ["LOCOSIM_DIR"], "robot_descriptions", "gazebo_plugins",
-                                  "lib")
-        paths = [p for p in os.environ.get("GAZEBO_PLUGIN_PATH", "").split(":") if p]
-        if plugin_dir not in paths:
-            os.environ["GAZEBO_PLUGIN_PATH"] = ":".join([plugin_dir] + paths)
-
     def _startupPosture(self):
         """The posture go0 applies at spawn, in joint order."""
         package = rospkg.RosPack().get_path(f"{self.robot_name}_description")

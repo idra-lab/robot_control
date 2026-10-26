@@ -161,8 +161,8 @@ actuator of training, and in the policy states it uses the json's `kp`/`kd` (Ali
 different law; the controller warns if it is on.
 
 In Gazebo the descriptions carry the PACE joint friction and rotor inertia (`const.xacro`, the rotor
-inertia through `libjoint_armature_plugin`). The controller adds locosim's `gazebo_plugins/lib` to
-`GAZEBO_PLUGIN_PATH` so Gazebo finds the plugin.
+inertia through `libjoint_armature_plugin`). `BaseController.startSimulator` adds locosim's
+`gazebo_plugins/lib` to `GAZEBO_PLUGIN_PATH` so Gazebo finds the plugin, for every controller.
 
 ## Configuration
 
