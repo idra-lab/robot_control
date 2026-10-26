@@ -1,0 +1,29 @@
+{
+    "_comment": "Trained in safe_rl (branch feat/pace-actuators), tasks Rl-Velocity-Go2 / Safe-Rl-Go2, on the identified PACE actuator model. 'normal' tracks the velocity command, 'safe' is the zero-command recovery policy resumed from it; both share this contract. Observation normalizer is inside the graph. imu_lin_acc is the accelerometer reading averaged over the policy step. See the README for the observation layout.",
+    "onnx_variants": {
+        "normal": "go2_velocity_normal.onnx",
+        "safe": "go2_velocity_safe.onnx"
+    },
+    "obs_dim": 228,
+    "num_actions": 12,
+    "history_length": 5,
+    "policy_rate": 50.0,
+    "action_scale": 0.5,
+    "q_default": [
+        0.0, 0.9, -1.8,
+        0.0, 0.9, -1.8,
+        0.0, 0.9, -1.8,
+        0.0, 0.9, -1.8
+    ],
+    "kp": 20.0,
+    "kd": 1.5,
+    "obs_layout": [
+        ["velocity_commands", 3, 1],
+        ["imu_lin_acc", 3, 5],
+        ["imu_ang_vel", 3, 5],
+        ["imu_projected_gravity", 3, 5],
+        ["joint_pos_rel", 12, 5],
+        ["joint_vel_rel", 12, 5],
+        ["actions", 12, 5]
+    ]
+}

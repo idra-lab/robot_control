@@ -1718,7 +1718,7 @@ if __name__ == '__main__':
     world_name = 'fast.world'
     use_gui = False
     p.state_estimation = 'odometry' # 'odometry','imu', 'pronto', 'ground_truth' (only sim), 'mocap'
-    rl_control = 'none' #'none', 'sensor_based' (Giulio), 'state_est_based' (Riccardo)
+    rl_control = 'state_est_based' #'none', 'sensor_based' (Giulio), 'state_est_based' (Riccardo)
     # NOTE: in the RL controller, SE NN is used only if state estimation is not pronto
     rl_use_nn_se = p.state_estimation != 'pronto'
     # Which policy family RlVelocityController runs: 'legacy' is the original set of networks under
@@ -1816,9 +1816,10 @@ if __name__ == '__main__':
                     rl_controller.velocity_cmd = np.array([long_x, long_y, rot_z])
                 else:
                     # send random vel every 3 sec btwn -0.4 and 0.4 m/s for x and y, and -0.4 and 0.4 rad/s for rotation
-                    if p.time > (p.startTime + 3.0) and p.time % 3.0 == 0:
-                        rl_controller.velocity_cmd = np.random.uniform(low=-0.4, high=0.4, size=(3,))
-                        
+                    # if p.time > (p.startTime + 3.0) and p.time % 3.0 == 0:
+                    #     rl_controller.velocity_cmd = np.random.uniform(low=-0.4, high=0.4, size=(3,))
+                    #
+                    rl_controller.velocity_cmd = np.array([0.05, 0, 0])
                 p.baseTwistW_des[:3] = p.b_R_w.T @ np.append(rl_controller.velocity_cmd[:2], 0.0)
                 p.baseTwistW_des[5] = rl_controller.velocity_cmd[2]
 

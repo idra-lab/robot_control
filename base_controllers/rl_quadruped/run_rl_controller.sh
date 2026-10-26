@@ -1,37 +1,13 @@
 #!/usr/bin/env bash
-# Launch the RL quadruped controller with real-time scheduling and, optionally, on an isolated core.
+# Launch the RL quadruped controller at SCHED_FIFO priority, optionally pinned to one core.
+# Threads inherit the policy, so the whole start-up runs real-time too.
 #
-# The controller asks for SCHED_FIFO itself, but doing it from outside covers the startup path too -
-# imports, the ONNX session, the ROS handshake - and works even where the in-process call is denied.
+#   ./run_rl_controller.sh --robot go2 --real --input joy          # priority 80, no pinning
+#   CPU=3 PRIO=90 ./run_rl_controller.sh --robot go2 --real        # pinned to core 3
 #
-#   ./run_rl_controller.sh --real --input joy          # RT priority, no pinning
-#   CPU=3 ./run_rl_controller.sh --real --input joy    # RT priority, pinned to core 3
-#   PRIO=90 ./run_rl_controller.sh --real              # different priority
-#
-# Any argument is passed straight through to rl_quadruped_controller.py.
-#
-# ----------------------------------------------------------------------------------------------
-# Core isolation (optional, biggest win on the real robot)
-# ----------------------------------------------------------------------------------------------
-# Pinning only helps if nothing else is allowed on that core. To reserve core 3 on a 4-core machine,
-# add to the *host* kernel command line (/etc/default/grub, GRUB_CMDLINE_LINUX_DEFAULT) and reboot:
-#
-#   isolcpus=3 nohz_full=3 rcu_nocbs=3 irqaffinity=0-2
-#
-#     isolcpus      keeps the scheduler from putting anything else there
-#     nohz_full     stops the periodic timer tick on that core
-#     rcu_nocbs     moves RCU callback processing off it
-#     irqaffinity   steers device interrupts to the other cores
-#
-# Then run with CPU=3. Verify with:
-#   cat /sys/devices/system/cpu/isolated
-#   chrt -p $(pgrep -f rl_quadruped_controller)
-#   taskset -p $(pgrep -f rl_quadruped_controller)
-#
-# Note the container must be able to grant these: the locosim container already runs --privileged,
-# which is what makes SCHED_FIFO available. Without it, expect the controller to warn and fall back
-# to normal scheduling.
-# ----------------------------------------------------------------------------------------------
+# Arguments go to rl_quadruped_controller.py.  Pinning helps only on an isolated core (host kernel
+# command line: isolcpus=3 nohz_full=3 rcu_nocbs=3 irqaffinity=0-2).  The container must run
+# --privileged for SCHED_FIFO.
 
 set -euo pipefail
 
@@ -60,7 +36,6 @@ if [ -n "$CPU" ]; then
     fi
 fi
 
-# One thread for the numeric libraries: the policy is a small MLP and extra threads only add jitter.
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 
 echo "Launching: ${CMD[*]} python3 $CONTROLLER $*"
