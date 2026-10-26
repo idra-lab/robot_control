@@ -25,6 +25,5 @@
         ["joint_pos_rel", 12, 5],
         ["joint_vel_rel", 12, 5],
         ["actions", 12, 5]
-    ],
-    "imu_lin_acc_model": {"kind": "mean_specific_force"}
+    ]
 }

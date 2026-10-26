@@ -1,16 +1,11 @@
-"""Measure the gait a *deployed* policy actually produces, in safe_rl's own terms.
+"""Gait report of a run_sim.py recording, with the sections of safe_rl's scripts/rsl_rl/eval_gait.py
+so a Gazebo run and an Isaac rollout can be compared side by side.
 
-The counterpart of ``safe_rl/scripts/rsl_rl/eval_gait.py``: same quantities, same sections, same
-order, computed from a recording made by :mod:`run_sim` instead of from an Isaac rollout.  Run
-eval_gait.py on the checkpoint in Isaac and this on the deployment recording, and the two reports
-can be read side by side - which is the only way to answer "it works in Isaac and not here" with
-something better than an impression.
-
-    python3 run_sim.py --record gz.npz
+    python3 run_sim.py --robot go2 --record gz.npz
     python3 gait_report.py gz.npz --phase fwd0.3
 
-Quantiles are p05 / p50 / p95, as in eval_gait.  Contact is "loaded" above CONTACT_THRESHOLD
-newtons, matching the 2 N force threshold of the training env's contact sensor.
+Quantiles are p05 / p50 / p95.  A foot is loaded above CONTACT_THRESHOLD, the training contact
+sensor's threshold.
 """
 
 import argparse
@@ -26,10 +21,7 @@ GRAVITY = 9.81                   # m/s^2
 
 
 def _body_weight(path, data, robot):
-    """Body weight in newtons and name of the robot a recording came from.
-
-    Taken from ``--robot`` if given, otherwise from the name ``run_sim.py`` stored in the file.
-    """
+    """Body weight in N and robot name, from --robot or the name run_sim.py stored."""
     if robot is None and "robot" in data:
         robot = str(data["robot"])
     if robot is None:
@@ -137,8 +129,7 @@ def report(path, phase=None, label=None, robot=None):
     print("\n-- peak foot force at touchdown (body weights)")
     print(f"   {_quantiles(touchdown)}")
 
-    # The action is held between inference ticks, so rate and jerk are taken on the policy's own
-    # steps: differencing the held signal would report zeros for nine ticks out of ten.
+    # the action is held between inferences: take rate and jerk on the policy's own steps
     changed = np.flatnonzero(np.any(np.diff(action, axis=0) != 0, axis=1)) + 1
     policy_action = action[changed] if changed.size else action[::10]
     delta = np.diff(policy_action, axis=0)

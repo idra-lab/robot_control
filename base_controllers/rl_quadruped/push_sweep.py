@@ -1,76 +1,33 @@
 """Push-recovery sweep in Gazebo: the largest shove a policy survives, per command and direction.
 
-    python3 push_sweep.py sweep --policy aliengo --out-dir ~/push_sweep/aliengo             # the grid
-    python3 push_sweep.py plot ~/push_sweep/aliengo                                          # the figure
+    python3 push_sweep.py sweep --robot go2 --out-dir ~/push_sweep/go2 --docker IMAGE --jobs 6
+    python3 push_sweep.py plot ~/push_sweep/go2
 
-What it measures
-----------------
-For one velocity command and one push direction, the robot is stood up, handed to the policy and
-pushed at 10, 20, 30 ... 400 N, one shove at a time, until it falls or has survived them all.  The
-number reported is the first force it does **not** survive.
+For each (variant, command, push direction) the robot is stood up, handed to the policy and pushed
+at 10, 20, 30 ... 400 N, one shove at a time, until it falls.  The result is the first force it
+does not survive.  The grid: the ``normal`` variant at zero command and on one-axis sweeps of vx,
+vy and wz from -0.5 to 0.5 in steps of 0.1, the ``safe`` variant at zero command, each pushed
+forward, left, backward and right in the base frame.
 
-The grid that ``sweep`` runs:
+Protocol (constants below, also written into every result):
 
-* the walking (``normal``) variant at the zero command, and on three one-axis command sweeps -
-  forward velocity, lateral velocity and yaw rate - from -0.5 to +0.5 in steps of 0.1;
-* the ``safe`` variant at the zero command, the only command it was trained on;
-* every one of those pushed forward, left, backward and right in the base frame.
+1. Fold, stand up, start the policy (``safe``: then the safe stop), hold the command ``SETTLE_S``;
+   the mean base height over its last second is h0.  A fall here fails at 0 N.
+2. Per force: push the base for ``push_duration`` (0.2 s), watch ``WATCH_S``, then wait up to
+   ``RECOVER_TIMEOUT_S`` for recovery.
+3. Fallen: the controller left the policy states, or |roll| or |pitch| > ``FALL_TILT``, or the base
+   below ``FALL_HEIGHT`` x h0.  Recovered: tilt < ``RECOVER_TILT``, |omega_xy| < ``RECOVER_RATE``
+   and the base above ``RECOVER_HEIGHT`` x h0, continuously for ``RECOVER_HOLD_S``.
 
-Protocol
---------
-The constants are in the ``protocol`` block below, and every one is written into each result file,
-so a result says how it was made.
+All waits are on simulated time.  A fall ends the controller (DAMPING, DONE), so each pair is its
+own Gazebo run; ``--docker`` runs them in parallel containers with separate ROS masters.  Pushes
+land at an arbitrary gait phase, so repeats can differ by a force step or two: ``--repeats N``
+plots the median and min-max.  A sweep resumes where it stopped (existing results are skipped) and
+appends to ``manifest.json`` the protocol, the policy md5s, the robot_control commit and diff, and
+the docker image.
 
-1. Start Gazebo and the controller, fold, stand up, start the policy.  For ``safe``, hand over to
-   it the way the operator does, with the safe stop.
-2. Hold the command for ``SETTLE_S`` of simulated time.  The mean base height over its last second is
-   the reference height h0.  A fall here is a failure at 0 N.
-3. For each force F: push the base with F newtons for the controller's ``push_duration`` (0.2 s), in
-   the chosen direction of the base frame at the instant of the push, then watch for ``WATCH_S``,
-   then wait for the robot to recover.  F survived = not fallen and recovered.
-4. *Fallen*: the controller left the policy states (its own safety envelope tripped), or |roll| or
-   |pitch| exceeded ``FALL_TILT``, or the base dropped below ``FALL_HEIGHT`` x h0.
-   *Recovered*: |roll| and |pitch| below ``RECOVER_TILT``, |omega_xy| below ``RECOVER_RATE`` and the
-   base above ``RECOVER_HEIGHT`` x h0, all continuously for ``RECOVER_HOLD_S``.  Not recovered within
-   ``RECOVER_TIMEOUT_S`` after the watch window is a failure at that force.
-
-A push is a force, not a torque: it goes through ``/gazebo/apply_body_wrench`` at the base origin, so
-F newtons for 0.2 s is an impulse of 0.2 F N*s.  Training pushes are velocity kicks of up to 1 m/s,
-i.e. ``body_mass`` x 1 m/s / 0.2 s = 125 N on the Aliengo and 80 N on the Go2 - the plot marks that
-level.  The wrench is world-frame, the only frame the service honours, so the base-frame direction is
-rotated by the base yaw when the push is sent.
-
-Every wait runs on simulated time (/clock): a loaded machine makes a run slower, not different.
-
-Why one Gazebo per (command, direction)
----------------------------------------
-After a fall the controller collapses on joint damping and stops for good (DAMPING, then DONE); it
-does not stand back up.  So every pair is its own Gazebo run, which also keeps the pairs independent
-of each other.  ``sweep --docker IMAGE`` runs them in parallel containers, each on its own network so
-their ROS masters and Gazebo servers cannot collide; without ``--docker`` it runs them one at a time
-in the current ROS environment.
-
-Repeatability
--------------
-The protocol is deterministic - fixed forces, directions and durations - but Gazebo and the
-controller are separate processes, not stepped in lockstep, and a push lands at whatever point of
-the gait the clock says.  Two runs of the same pair can therefore differ by a force step or two.
-``--repeats N`` runs every pair N times; the plot then shows the median and the min-max.
-
-Every ``sweep`` call appends an entry to ``manifest.json`` next to the results: the protocol, the
-md5 of the policy files, the robot_control commit (and whether its tree was dirty), the docker
-image, the command line and which result files that call produced.
-A sweep is resumable: pairs that already have a result file are skipped, so rerunning the same
-command finishes an interrupted sweep, and deleting ``trials/`` starts over.
-
-Output
-------
-::
-
-    <out-dir>/manifest.json            how the sweep was run
-    <out-dir>/trials/<pair>.json       one result per (variant, command, direction, repeat)
-    <out-dir>/logs/<pair>.log          that run's controller and Gazebo output
-    <out-dir>/push_sweep.png, .csv     written by ``plot``
+Output: ``manifest.json``, ``trials/<pair>.json``, ``logs/<pair>.log``, and from ``plot``
+``push_sweep.png`` and ``push_sweep.csv``.
 """
 
 import argparse
@@ -86,9 +43,7 @@ import sys
 import threading
 import time as wall
 
-# One thread for the numeric libraries, as run_rl_controller.sh sets: by default each library starts
-# a thread per core and spins them, and several trials at once then starve their own control loops
-# (a pair measured at a real-time factor of 0.89 fell to a 10 N push).  Set before numpy loads.
+# One thread for the numeric libraries (before numpy): parallel trials otherwise starve each other.
 for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
     os.environ.setdefault(_var, "1")
 
@@ -125,8 +80,7 @@ CONTAINER_ENV = ("source /opt/ros/noetic/setup.bash && source /root/ros_ws/insta
                  "ROS_HOSTNAME=localhost DISABLE_ROS1_EOL_WARNINGS=1 && "
                  "export PYTHONPATH=/opt/ros/noetic/lib/python3.8/site-packages:"
                  "$LOCOSIM_DIR/robot_control:$PYTHONPATH")
-"""What the image's interactive bashrc sets up, for the non-interactive shell a trial runs in.  ROS
-logs go to the container's /tmp so a sweep does not leave a log directory per pair in ~/.ros."""
+"""The image's interactive bashrc, for the non-interactive shell of a trial."""
 
 
 def grid(repeats=1):
@@ -150,8 +104,8 @@ def trial_name(variant, command, direction, repeat):
     return f"{variant}_vx{vx:+.1f}_vy{vy:+.1f}_wz{wz:+.1f}_{direction}_r{repeat}"
 
 
-def policy_files(policy):
-    contract = os.path.join(POLICY_DIR, f"{policy}_velocity.json")
+def policy_files(robot):
+    contract = os.path.join(POLICY_DIR, f"{robot}_velocity.json")
     with open(contract) as f:
         variants = json.load(f).get("onnx_variants", {})
     return [contract] + [os.path.join(POLICY_DIR, name) for name in variants.values()]
@@ -179,19 +133,18 @@ def run_trial(args):
         sys.exit("the safe variant only runs at the zero command")
     forces = [f for f in FORCES if f <= args.max_force]
 
-    controller = RlQuadrupedController(args.robot, input_device="none", policy_name=args.policy,
-                                       skip_calibration=True, use_rviz=False, realtime=False,
-                                       inference_timing=False, estimate_velocity=True)
+    controller = RlQuadrupedController(args.robot, input_device="none", skip_calibration=True,
+                                       use_rviz=False, realtime=False)
     controller.startController(additional_args=["gui:=false"])
 
     result = {
-        "robot": args.robot, "policy": args.policy, "variant": args.variant,
+        "robot": args.robot, "variant": args.variant,
         "command": command, "direction": args.direction, "direction_deg": direction,
         "repeat": args.repeat,
         "push_duration": controller.cfg["push_duration"],
         "training_push_force": controller.cfg["body_mass"] * 1.0 / controller.cfg["push_duration"],
         "kp": controller.policy.cfg["kp"], "kd": controller.policy.cfg["kd"],
-        "policy_md5": {os.path.basename(p): md5(p) for p in policy_files(args.policy)},
+        "policy_md5": {os.path.basename(p): md5(p) for p in policy_files(args.robot)},
         "protocol": PROTOCOL, "forces_planned": forces,
         "h0": None, "pushes": [], "failure_force": None, "failure_reason": None,
         "max_survived": None, "error": None,
@@ -255,7 +208,7 @@ def run_trial(args):
         yaw = snapshot()[3]
         heading = yaw + np.radians(direction)
         request = ApplyBodyWrenchRequest()
-        request.body_name = controller.cfg["push_body"] or f"{controller.robot_name}::base_link"
+        request.body_name = f"{controller.robot_name}::base_link"
         request.reference_frame = "world"
         request.wrench.force.x = force * np.cos(heading)
         request.wrench.force.y = force * np.sin(heading)
@@ -273,8 +226,7 @@ def run_trial(args):
             result["sim_s"] = sim_now() - sim_start if sim_start is not None else None
         except Exception:                               # rospy already shutting down
             result["sim_s"] = None
-        # Below ~0.9 the machine could not keep Gazebo in real time; the waits are on sim time, but
-        # the controller is a separate process, so check its loop was not starved too.
+        # below ~0.9 Gazebo did not keep real time, and the controller may have been starved too
         if result["sim_s"]:
             result["real_time_factor"] = result["sim_s"] / (wall.monotonic() - wall_sim_start)
         with open(args.out, "w") as f:
@@ -406,8 +358,7 @@ def run_sweep(args):
         if not os.path.exists(out):
             todo.append((name, variant, command, direction, repeat, out))
 
-    # One entry per invocation, appended: a resumed or extended sweep may run on a later commit,
-    # and each entry says which result files it produced.
+    # one entry per invocation: a resumed sweep may run on a later commit
     manifest_path = os.path.join(out_dir, "manifest.json")
     sweeps = []
     if os.path.exists(manifest_path):
@@ -417,9 +368,9 @@ def run_sweep(args):
     sweeps.append({
         "created": datetime.datetime.now().isoformat(timespec="seconds"),
         "command_line": " ".join(sys.argv),
-        "robot": args.robot, "policy": args.policy, "repeats": args.repeats,
+        "robot": args.robot, "repeats": args.repeats,
         "max_force": args.max_force, "protocol": PROTOCOL,
-        "policy_md5": {os.path.basename(p): md5(p) for p in policy_files(args.policy)},
+        "policy_md5": {os.path.basename(p): md5(p) for p in policy_files(args.robot)},
         "robot_control_git": git_state(os.path.join(HERE, "..", "..")),
         "docker_image": args.docker, "docker_image_id": image_id,
         "trials_run": [item[0] for item in todo],
@@ -433,7 +384,7 @@ def run_sweep(args):
 
     def launch(item):
         name, variant, command, direction, repeat, out = item
-        trial_args = ["trial", "--robot", args.robot, "--policy", args.policy, "--variant", variant,
+        trial_args = ["trial", "--robot", args.robot, "--variant", variant,
                       "--cmd", *[f"{c:.1f}" for c in command], "--direction", direction,
                       "--repeat", str(repeat), "--max-force", str(args.max_force)]
         log_path = os.path.join(out_dir, "logs", name + ".log")
@@ -524,7 +475,7 @@ def run_plot(args):
     errors = [r for r in results if r["error"]]
     ceiling = max(max(r["forces_planned"]) for r in results)
     training = results[0]["training_push_force"]
-    policy = results[0]["policy"]
+    robot = results[0]["robot"]
 
     # (variant, command, direction) -> [(failure force, survived every push) per repeat]
     table = {}
@@ -634,7 +585,7 @@ def run_plot(args):
     handles, names = axes[0].get_legend_handles_labels()
     fig.legend(handles, [f"pushed {n}" for n in names], loc="upper right", ncol=4, frameon=False,
                fontsize=9, bbox_to_anchor=(0.995, 1.0))
-    fig.suptitle(f"{policy}: push recovery in Gazebo", x=0.01, ha="left", fontsize=12.5,
+    fig.suptitle(f"{robot}: push recovery in Gazebo", x=0.01, ha="left", fontsize=12.5,
                  color=INK)
     spread = "median of %d runs, bar = min-max; " % repeats if repeats > 1 else "one run per point; "
     note = (f"Push at the base origin in the base-frame direction shown, increasing by "
@@ -657,7 +608,6 @@ def parse_args(argv=None):
 
     trial = sub.add_parser("trial", help="one (variant, command, direction): runs Gazebo itself")
     trial.add_argument("--robot", default="aliengo")
-    trial.add_argument("--policy", required=True, help="policy basename under policies/")
     trial.add_argument("--variant", choices=("normal", "safe"), default="normal")
     trial.add_argument("--cmd", nargs=3, type=float, default=(0.0, 0.0, 0.0),
                        metavar=("VX", "VY", "WZ"))
@@ -668,7 +618,6 @@ def parse_args(argv=None):
 
     sweep = sub.add_parser("sweep", help="the whole grid, resumable")
     sweep.add_argument("--robot", default="aliengo")
-    sweep.add_argument("--policy", required=True, help="policy basename under policies/")
     sweep.add_argument("--out-dir", required=True)
     sweep.add_argument("--repeats", type=int, default=1)
     sweep.add_argument("--max-force", type=int, default=FORCES[-1])

@@ -1,20 +1,10 @@
-"""Run the velocity policy through a scripted command sequence in Gazebo and report the gait.
+"""Run the controller in Gazebo through a fixed command sequence and print the gait per phase.
 
-    python3 run_sim.py                      # the default sequence, prints a summary
-    python3 run_sim.py --record gz.npz      # and save it for gait_report.py
-    python3 run_sim.py --rviz --gui
-
-This drives the real controller - its state machine, ros_impedance_controller and Gazebo - through
-the scripted command interface, so what it measures is what the robot does, not what a reduced
-model of it does.  The value over driving it by hand is repeatability: the same commands for the
-same durations every time, so two runs differing only in a parameter can be compared.
-
-Recordings are read by :mod:`gait_report`, which prints the same sections as safe_rl's
-``scripts/rsl_rl/eval_gait.py`` so an Isaac rollout and a Gazebo run can be diffed directly.
+    python3 run_sim.py --robot go2                    # prints a summary
+    python3 run_sim.py --robot go2 --record gz.npz    # and saves the run for gait_report.py
 """
 
 import argparse
-import os
 import sys
 import time as wall
 import threading
@@ -30,16 +20,11 @@ PHASES = [("settle",  (0.0, 0.0, 0.0), 2.0, "normal"),
           ("lat0.3",  (0.0, 0.3, 0.0), 8.0, "normal"),
           ("fwd0.5",  (0.5, 0.0, 0.0), 8.0, "normal"),
           ("safe",    (0.0, 0.0, 0.0), 8.0, "safe")]
-"""The last phase hands over to the standstill variant, which is the only way to see what the
-backup policy does: it is trained on a zero command and is what the controller reaches for when
-something has gone wrong, so its station-keeping is worth measuring rather than assuming."""
 
 RECORD_KEYS = ("sim", "state", "phase", "pose", "twist", "angvel", "q", "qd", "qdes", "cmd",
-               "tau", "est", "action", "grf", "foot_z")
-"""``grf`` is the normal force on each foot and ``foot_z`` the sole height, both in leg order
-FL, RL, FR, RR - the order the policy's joints are in.  They are what turns a recording into the
-gait report that :mod:`gait_report` prints, and therefore what makes a deployment run comparable
-with safe_rl's own ``scripts/rsl_rl/eval_gait.py`` output from Isaac."""
+               "tau", "est", "action", "grf", "foot_z", "acc", "imu_obs")
+"""Per control tick.  ``grf`` (foot normal force) and ``foot_z`` are in leg order FL, RL, FR, RR;
+``acc`` is the accelerometer reading handed to the policy, ``imu_obs`` its last imu_lin_acc term."""
 
 
 # =================================================================================================
@@ -84,15 +69,13 @@ def run_gazebo(args):
     from base_controllers.rl_quadruped.commandInterface import Event
 
     controller = RlQuadrupedController(args.robot, input_device="none", skip_calibration=True,
-                                       use_rviz=args.rviz, realtime=False, inference_timing=False,
-                                       estimate_velocity=True)
+                                       use_rviz=args.rviz, realtime=False)
     controller.startController(additional_args=["gui:=" + ("true" if args.gui else "false")])
 
     log = {k: [] for k in RECORD_KEYS}
     phase = [""]
 
-    # Foot contact comes from the bumper sensors in the robot's description.  The controller does
-    # not subscribe to them (nothing in its loop uses contact), so the harness does.
+    # foot contact from the bumper sensors of the description
     from gazebo_msgs.msg import ContactsState
     grf = np.zeros(4)
     legs = ["lf", "lh", "rf", "rh"]        # locosim order = FL, RL, FR, RR
@@ -128,6 +111,8 @@ def run_gazebo(args):
             log["action"].append(controller.rl_action.copy())
             log["grf"].append(grf.copy())
             log["foot_z"].append(np.full(4, np.nan))   # no foot frames published by Gazebo
+            log["acc"].append(controller.imu_lin_acc().copy())
+            log["imu_obs"].append(controller.policy.imu_lin_acc_obs.copy())
         return original_send(*a, **k)
     controller.send_des_jstate = send
 
@@ -181,9 +166,7 @@ def run_gazebo(args):
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--robot", default="aliengo", choices=known_robots(),
-                        help="robot to run; add an entry to ROBOTS in rl_controller_config.py to "
-                             "offer another one here")
+    parser.add_argument("--robot", default="aliengo", choices=known_robots())
     parser.add_argument("--rviz", action="store_true", help="start rviz with the simulator")
     parser.add_argument("--gui", action="store_true", help="show the gazebo gui")
     parser.add_argument("--record", default=None, metavar="FILE.npz", help="save the run")
@@ -198,8 +181,7 @@ def main(argv=None):
         return 1
     summarise(log, f"gazebo - {args.robot}")
     if args.record:
-        # Store the robot name so gait_report.py can normalise by the right body weight.
-        np.savez(args.record, robot=np.array(args.robot), **log)
+        np.savez(args.record, robot=np.array(args.robot), **log)   # gait_report reads the robot
         print(f" saved {len(log['sim'])} ticks to {args.record}")
     return 0
 

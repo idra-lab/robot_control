@@ -213,12 +213,8 @@ class RlVelocityController():
                           "yellow"))
         self.use_nn_se = True
 
-        # measure_timing is off: nothing in this path reads the per-tick counters, so timing every
-        # inference would only cost two perf_counter calls per tick.  Use rl_quadruped_controller
-        # for the instrumented run.
         self.policy = VelocityPolicy(self.robot_name, dt=dt,
-                                     enable_estimator=self.estimate_velocity,
-                                     measure_timing=False)
+                                     enable_estimator=self.estimate_velocity)
         self.cfg = self.policy.cfg
         self.q_def = self.policy.q_default
         self.q_des = self.q_def.copy()

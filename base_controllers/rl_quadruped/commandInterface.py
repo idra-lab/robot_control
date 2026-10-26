@@ -1,34 +1,19 @@
-"""Operator input for the RL quadruped controller: keyboard or Xbox joystick, one API.
+"""Operator input for the RL quadruped controller: keyboard, Xbox pad over ``/joy``, or none.
 
-Both backends expose the same two things:
-
-* a body-frame velocity command ``(vx, vy, wz)``, already scaled and dead-zoned;
-* a queue of one-shot :class:`Event` values, so the caller sees a button press exactly once.
-
-The keyboard backend reads raw stdin, so it needs no window, no X server and no extra packages -
-handy over ssh to the robot.  The joystick backend rides on the ``/joy`` topic published by the ROS
-``joy`` node, which is what the lab's Xbox pads are already wired to.
-
-The ``STOP`` event is the emergency one; on the pad it is deliberately mapped to a button you can hit
-without aiming (both bumpers, or Back), and on the keyboard to the space bar.  The space bar keeps
-that meaning at all times, including while a velocity is being typed - which is why the numeric entry
-mode uses commas as separators and never spaces.
-
-The keyboard offers three ways to set a velocity: stepping it with the direction keys, jumping to a
-preset with the number keys, and typing an exact command after ``v``.
+Every backend provides a body-frame velocity command ``(vx, vy, wz)`` and a queue of one-shot
+:class:`Event` values.  The emergency ``STOP`` is the space bar on the keyboard (also while typing a
+velocity) and BACK or LB+RB on the pad.
 """
 
 import atexit
 import os
 import select
-import struct
 import subprocess
 import sys
 import termios
 import time
 import tty
 from enum import Enum
-from types import SimpleNamespace
 
 import numpy as np
 import rospy as ros
@@ -37,42 +22,38 @@ from termcolor import colored
 
 
 class Event(Enum):
-    """One-shot operator requests."""
-
     CALIBRATE = "calibrate"
     STAND_UP = "stand_up"
     START_RL = "start_rl"
-    SAFE_STOP = "safe_stop"  # hand over to the zero-command policy; the robot stays standing
+    SAFE_STOP = "safe_stop"    # hand over to the zero-command policy, the robot stays standing
     STAND_DOWN = "stand_down"
-    STOP = "stop"          # emergency: collapse on joint damping
+    STOP = "stop"              # emergency: collapse on joint damping
     QUIT = "quit"
-    ZERO_CMD = "zero_cmd"
-    PUSH = "push"              # simulation only: shove the base once, random direction
+    PUSH = "push"              # simulation only: one random shove
     PUSH_BURST = "push_burst"  # simulation only: a run of random shoves
 
 
 class CommandInterfaceBase(object):
-    """Shared velocity-command state and event queue."""
+    """Velocity command, push magnitude and the event queue."""
 
-    def __init__(self, max_lin_vel=0.5, max_ang_vel=0.5, push_force=125.0,
-                 push_force_step=25.0):
+    def __init__(self, max_lin_vel=0.5, max_ang_vel=0.5, push_force=125.0, push_force_step=25.0):
         self.max_lin_vel = float(max_lin_vel)
         self.max_ang_vel = float(max_ang_vel)
         self.velocity_cmd = np.zeros(3)
-        # Magnitude of the disturbance the PUSH events ask for, in newtons.  It lives here beside
-        # the velocity command because it is an operator setting, not a robot property: the
-        # controller reads it when a push is requested and turns it into a wrench.
         self.push_force = float(push_force)
         self.push_force_step = float(push_force_step)
         self._events = []
 
-    def _post(self, event):
+    def post(self, event):
         self._events.append(event)
 
     def poll(self):
-        """Return the events seen since the last call, oldest first, and clear the queue."""
+        """Return the events seen since the last call, oldest first."""
         events, self._events = self._events, []
         return events
+
+    def update(self):
+        pass
 
     def get_velocity_cmd(self):
         return self.velocity_cmd
@@ -81,36 +62,18 @@ class CommandInterfaceBase(object):
         self.velocity_cmd[:] = 0.0
 
     def adjust_push_force(self, delta):
-        """Change the push magnitude, never below zero, and report the new value."""
         self.push_force = max(0.0, self.push_force + delta)
         print(colored(f"push force {self.push_force:.0f} N", "cyan"))
-        return self.push_force
 
     def shutdown(self):
         pass
 
-    @staticmethod
-    def help():
-        return ""
-
 
 class KeyboardCommandInterface(CommandInterfaceBase):
-    """Non-blocking raw-stdin keyboard input.
+    """Non-blocking raw-stdin keyboard.  The command is held between key presses: direction keys
+    step it, number keys jump to a forward preset, ``v`` reads ``vx[,vy[,wz]]`` up to Enter."""
 
-    The velocity command is held between key presses rather than pulsed, so the robot keeps walking
-    while you are not touching anything.  Three ways to set it:
-
-    * direction keys step it by ``lin_step`` / ``ang_step``;
-    * number keys 1-N jump the forward velocity to ``speed_presets``;
-    * ``v`` starts numeric entry - type ``vx``, ``vx,vy`` or ``vx,vy,wz`` and press Enter.
-
-    The terminal is put in cbreak mode and restored on shutdown, also via ``atexit`` so a crash does
-    not leave the shell unusable.
-    """
-
-    ENTRY_TIMEOUT = 8.0
-    """Numeric entry is abandoned after this long without a keystroke, so a forgotten half-typed
-    command cannot swallow the action keys indefinitely."""
+    ENTRY_TIMEOUT = 8.0   # s without a keystroke before a half-typed velocity is dropped
 
     KEY_MAP = {
         "p": Event.PUSH,
@@ -121,39 +84,32 @@ class KeyboardCommandInterface(CommandInterfaceBase):
         "d": Event.STAND_DOWN,
         " ": Event.STOP,
         "q": Event.QUIT,
-        "x": Event.ZERO_CMD,
     }
 
     def __init__(self, max_lin_vel=0.5, max_ang_vel=0.5, lin_step=0.1, ang_step=0.1,
-                 speed_presets=(0.0, 0.1, 0.2, 0.3, 0.4), push_force=125.0,
-                 push_force_step=25.0):
+                 speed_presets=(0.0, 0.1, 0.2, 0.3, 0.4), push_force=125.0, push_force_step=25.0):
         super(KeyboardCommandInterface, self).__init__(max_lin_vel, max_ang_vel, push_force,
                                                        push_force_step)
         self.lin_step = lin_step
         self.ang_step = ang_step
         self.speed_presets = tuple(speed_presets)
-        self._entry = None          # None when not typing, else the buffer so far
+        self._entry = None          # None when not typing, else the text so far
         self._entry_stamp = 0.0
         self._fd = sys.stdin.fileno()
-        self._restored = True
-        self._old_settings = None
         if not os.isatty(self._fd):
-            raise RuntimeError("Keyboard input needs a tty; start the controller from a terminal "
-                               "(lab_locosim / dock-other) or use --input joy")
+            raise RuntimeError("Keyboard input needs a terminal; use --input joy or none")
         self._old_settings = termios.tcgetattr(self._fd)
         tty.setcbreak(self._fd)
         self._restored = False
         atexit.register(self.shutdown)
-        print(colored(self.help(self.lin_step, self.ang_step, self.speed_presets,
-                                self.push_force), "cyan"))
+        print(colored(self.help(), "cyan"))
 
     def shutdown(self):
-        if not self._restored and self._old_settings is not None:
+        if not self._restored:
             termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_settings)
             self._restored = True
 
     def update(self):
-        """Drain pending keystrokes.  One non-blocking select per control tick."""
         while select.select([sys.stdin], [], [], 0.0)[0]:
             key = sys.stdin.read(1)
             if not key:
@@ -163,12 +119,10 @@ class KeyboardCommandInterface(CommandInterfaceBase):
             self._entry = None
             print(colored("\rVelocity entry timed out", "yellow"), flush=True)
 
-    # -- numeric entry ---------------------------------------------------------------------------
     def _handle_entry(self, key):
-        # The emergency key outranks everything, including a half-typed command.
         if key == " ":
             self._entry = None
-            self._post(Event.STOP)
+            self.post(Event.STOP)
             return
         self._entry_stamp = time.monotonic()
         if key in ("\r", "\n"):
@@ -185,23 +139,20 @@ class KeyboardCommandInterface(CommandInterfaceBase):
             print(f"\rvelocity> {self._entry}", end="", flush=True)
 
     def _apply_entry(self, text):
-        text = text.strip()
-        if not text:
+        if not text.strip():
             print(colored("\rVelocity entry cancelled", "yellow"), flush=True)
             return
         try:
-            values = [float(part) for part in text.split(",") if part.strip() != ""]
+            values = [float(part) for part in text.split(",") if part.strip()]
         except ValueError:
-            print(colored(f"\rCannot read '{text}' as a velocity; expected vx[,vy[,wz]]", "red"),
-                  flush=True)
+            print(colored(f"\rCannot read '{text}' as vx[,vy[,wz]]", "red"), flush=True)
             return
         if not 1 <= len(values) <= 3:
             print(colored(f"\rExpected 1 to 3 values, got {len(values)}", "red"), flush=True)
             return
-        cmd = np.zeros(3)
-        cmd[:len(values)] = values
-        requested = cmd.copy()
-        self.velocity_cmd[:] = cmd
+        self.velocity_cmd[:] = 0.0
+        self.velocity_cmd[:len(values)] = values
+        requested = self.velocity_cmd.copy()
         self._clamp()
         self._report("typed", requested)
 
@@ -212,50 +163,34 @@ class KeyboardCommandInterface(CommandInterfaceBase):
                                              -self.max_ang_vel, self.max_ang_vel))
 
     def _report(self, source, requested=None):
-        """Print the full resulting command after any change.
-
-        Every way of setting a velocity ends up here, so the operator always sees the complete
-        ``(vx, vy, wz)`` rather than having to track which component the last key press moved.
-        """
         cmd = self.velocity_cmd
         text = (f"velocity command  vx={cmd[0]:+.2f} m/s  vy={cmd[1]:+.2f} m/s  "
                 f"wz={cmd[2]:+.2f} rad/s   [{source}]")
         if requested is not None and not np.allclose(requested, cmd):
-            print(colored(f"\r{text}  <- clamped from "
-                          f"({requested[0]:+.2f}, {requested[1]:+.2f}, {requested[2]:+.2f}), "
-                          f"limits {self.max_lin_vel} m/s and {self.max_ang_vel} rad/s",
-                          "yellow"), flush=True)
+            print(colored(f"\r{text}  <- clamped from {np.round(requested, 2)}", "yellow"),
+                  flush=True)
         else:
             print(colored("\r" + text, "green"), flush=True)
 
-    # -- normal mode -----------------------------------------------------------------------------
     def _handle(self, key):
         if self._entry is not None:
             self._handle_entry(key)
             return
-
         if key == "v":
             self._entry = ""
             self._entry_stamp = time.monotonic()
             print(colored("\rType vx[,vy[,wz]] then Enter (Esc cancels): ", "cyan"), end="",
                   flush=True)
             return
-
-        if key.isdigit() and key != "0":
-            index = int(key) - 1
-            if index < len(self.speed_presets):
-                self.velocity_cmd[0] = self.speed_presets[index]
-                self.velocity_cmd[1] = 0.0
-                self.velocity_cmd[2] = 0.0
-                self._clamp()
-                self._report(f"preset {key}")
-                return
-
-        # Before the case-folding lookup: 'P' has to stay distinct from 'p'.
-        if key == "P":
-            self._post(Event.PUSH_BURST)
+        if key.isdigit() and key != "0" and int(key) <= len(self.speed_presets):
+            self.velocity_cmd[:] = (self.speed_presets[int(key) - 1], 0.0, 0.0)
+            self._clamp()
+            self._report(f"preset {key}")
             return
-        if key in ("+", "="):            # same physical key on most layouts
+        if key == "P":                   # checked before lower-casing
+            self.post(Event.PUSH_BURST)
+            return
+        if key in ("+", "="):
             self.adjust_push_force(self.push_force_step)
             return
         if key == "-":
@@ -263,51 +198,40 @@ class KeyboardCommandInterface(CommandInterfaceBase):
             return
 
         lowered = key.lower()
-        if lowered in self.KEY_MAP:
-            event = self.KEY_MAP[lowered]
-            if event is Event.ZERO_CMD:
-                self.zero()
-                self._report("zeroed")
-            self._post(event)
+        if lowered == "x":
+            self.zero()
+            self._report("zeroed")
             return
-
+        if lowered in self.KEY_MAP:
+            self.post(self.KEY_MAP[lowered])
+            return
         steps = {"w": (0, self.lin_step), "s": (0, -self.lin_step),
                  "a": (1, self.lin_step), "z": (1, -self.lin_step),
                  "j": (2, self.ang_step), "l": (2, -self.ang_step)}
-        if lowered not in steps:
-            return
-        axis, delta = steps[lowered]
-        requested = self.velocity_cmd.copy()
-        requested[axis] += delta
-        self.velocity_cmd[axis] += delta
-        self._clamp()
-        self._report(f"{lowered} {delta:+.2f}", requested)
+        if lowered in steps:
+            axis, delta = steps[lowered]
+            self.velocity_cmd[axis] += delta
+            requested = self.velocity_cmd.copy()
+            self._clamp()
+            self._report(f"{lowered} {delta:+.2f}", requested)
 
-    @staticmethod
-    def help(lin_step=0.1, ang_step=0.1, speed_presets=(0.0, 0.1, 0.2, 0.3, 0.4),
-             push_force=125.0):
-        presets = "  ".join(f"{i + 1}:{v:g}" for i, v in enumerate(speed_presets))
+    def help(self):
+        presets = "  ".join(f"{i + 1}:{v:g}" for i, v in enumerate(self.speed_presets))
         return ("\nKeyboard commands\n"
-                "  c  calibrate IMU bias        w/s  forward / backward "
-                f"(step {lin_step:g} m/s)\n"
+                f"  c  calibrate IMU bias        w/s  forward / backward (step {self.lin_step:g} m/s)\n"
                 "  u  stand up                  a/z  left / right\n"
-                "  r  start RL policy           j/l  turn left / right "
-                f"(step {ang_step:g} rad/s)\n"
+                f"  r  start RL policy           j/l  turn left / right (step {self.ang_step:g} rad/s)\n"
                 "  f  SAFE STOP (stay standing) v    type an exact velocity: vx[,vy[,wz]] Enter\n"
                 "  d  stand down                x    zero the velocity command\n"
                 f"  SPACE  EMERGENCY damping     forward presets  {presets}\n"
-                f"  q  quit\n"
-                f"\nDisturbances (simulation only)\n"
-                f"  p  one random push           -/+  push force -/+ "
-                f"(now {push_force:.0f} N)\n"
-                f"  P  a burst of random pushes\n")
+                "  q  quit\n"
+                "\nDisturbances (simulation only)\n"
+                f"  p  one random push           -/+  push force (now {self.push_force:.0f} N)\n"
+                "  P  a burst of random pushes\n")
 
 
 class JoyCommandInterface(CommandInterfaceBase):
-    """Xbox pad over the ROS ``/joy`` topic, with edge-detected buttons.
-
-    Axis and button indices follow the standard Linux ``xpad`` layout used by the ROS ``joy`` node.
-    """
+    """Xbox pad over the ROS ``/joy`` topic (xpad layout), with edge-detected buttons."""
 
     A, B, X, Y, LB, RB, BACK, START = 0, 1, 2, 3, 4, 5, 6, 7
 
@@ -320,28 +244,22 @@ class JoyCommandInterface(CommandInterfaceBase):
         START: Event.QUIT,
     }
 
-    def __init__(self, max_lin_vel=0.5, max_ang_vel=0.5, dead_zone=0.08, start_joy_node=True,
-                 push_force=125.0, push_force_step=25.0):
+    def __init__(self, max_lin_vel=0.5, max_ang_vel=0.5, dead_zone=0.08, push_force=125.0,
+                 push_force_step=25.0):
         super(JoyCommandInterface, self).__init__(max_lin_vel, max_ang_vel, push_force,
                                                   push_force_step)
         self.dead_zone = dead_zone
         self._msg = Joy()
         self._prev_buttons = None
-        if start_joy_node:
-            self._start_joy_node()
+        self._start_joy_node()
         self._sub = ros.Subscriber("/joy", Joy, self._callback, queue_size=1, tcp_nodelay=True)
         print(colored(self.help(), "cyan"))
 
-    def _start_joy_node(self):
-        try:
-            subprocess.run(["rosnode", "kill", "/joy_node"], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
-        try:
-            subprocess.Popen(["rosrun", "joy", "joy_node", "_dev:=/dev/input/js0"])
-        except Exception as exc:
-            raise RuntimeError(f"Could not start the ROS joy node: {exc}")
+    @staticmethod
+    def _start_joy_node():
+        subprocess.run(["rosnode", "kill", "/joy_node"], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
+        subprocess.Popen(["rosrun", "joy", "joy_node", "_dev:=/dev/input/js0"])
         try:
             ros.wait_for_message("/joy", Joy, timeout=5.0)
             print(colored("Joystick connected", "green"))
@@ -358,8 +276,7 @@ class JoyCommandInterface(CommandInterfaceBase):
     def update(self):
         msg = self._msg
         if len(msg.axes) >= 4:
-            # Left stick drives translation, right stick X drives yaw rate.  Isaac trained the
-            # command in the base frame, which is what the sticks map onto directly.
+            # left stick: translation, right stick x: yaw rate
             self.velocity_cmd[0] = self.max_lin_vel * self._dead_zone(msg.axes[1])
             self.velocity_cmd[1] = self.max_lin_vel * self._dead_zone(msg.axes[0])
             self.velocity_cmd[2] = self.max_ang_vel * self._dead_zone(msg.axes[3])
@@ -370,23 +287,18 @@ class JoyCommandInterface(CommandInterfaceBase):
         if self._prev_buttons is None:
             self._prev_buttons = buttons
             return
-
         pressed = [i for i, b in enumerate(buttons)
                    if b and i < len(self._prev_buttons) and not self._prev_buttons[i]]
-        # Both bumpers together is the panic grip: easy to hit without looking.
-        both_bumpers = (len(buttons) > max(self.LB, self.RB)
-                        and buttons[self.LB] and buttons[self.RB])
+        both_bumpers = len(buttons) > self.RB and buttons[self.LB] and buttons[self.RB]
         if both_bumpers:
             if self.LB in pressed or self.RB in pressed:
-                self._post(Event.STOP)
+                self.post(Event.STOP)
         elif self.RB in pressed:
-            # RB on its own is the safe stop.  Grabbing the panic grip can still close RB one
-            # message before LB and emit a safe stop first; that is harmless, because the
-            # emergency arrives a few milliseconds later and overrides it from any state.
-            self._post(Event.SAFE_STOP)
+            # A panic grip can close RB one message before LB: the STOP that follows still wins.
+            self.post(Event.SAFE_STOP)
         for index in pressed:
             if index in self.BUTTON_MAP:
-                self._post(self.BUTTON_MAP[index])
+                self.post(self.BUTTON_MAP[index])
         self._prev_buttons = buttons
 
     @staticmethod
@@ -398,155 +310,16 @@ class JoyCommandInterface(CommandInterfaceBase):
                 "  B  stand down                RB  SAFE STOP (stay standing)\n"
                 "  BACK or LB+RB  EMERGENCY damping      START  quit\n")
 
-class LinuxJoyCommandInterface(JoyCommandInterface):
-    """The same pad and the same mapping as :class:`JoyCommandInterface`, read straight from
-    ``/dev/input/jsN`` instead of the ROS ``/joy`` topic.
 
-    It exists because this container has no ``ros-noetic-joy`` package, so the ``/joy`` path above
-    cannot work, and installing one into a container that is recreated with ``--rm`` buys a pad that
-    stops working tomorrow.  The Linux joystick API is four fields of a binary struct, so reading it
-    here costs less than the dependency does.
-
-    The axis sign follows the ROS ``joy_node`` convention (``-value / 32767``), so that stick
-    forward and stick left are positive, and every button index and stick assignment is inherited
-    from the parent unchanged - the pad means the same thing whichever transport it arrives on.
-    """
-
-    EVENT_FORMAT = "<IhBB"      # time (u32), value (s16), type (u8), number (u8)
-    EVENT_SIZE = struct.calcsize(EVENT_FORMAT)
-    JS_EVENT_BUTTON, JS_EVENT_AXIS, JS_EVENT_INIT = 0x01, 0x02, 0x80
-    JSIOCGAXES, JSIOCGBUTTONS = 0x80016a11, 0x80016a12
-    MIN_AXES = 4                # left stick (2) + right stick (2); fewer is not a gamepad
-
-    def __init__(self, device="/dev/input/js0", max_lin_vel=0.5, max_ang_vel=0.5, dead_zone=0.08,
-                 push_force=125.0, push_force_step=25.0, **ignored):
-        CommandInterfaceBase.__init__(self, max_lin_vel, max_ang_vel, push_force, push_force_step)
-        self.dead_zone = dead_zone
-        self.device = device
-        self._axes = [0.0] * 8
-        self._buttons = [0] * 16
-        self._msg = SimpleNamespace(axes=self._axes, buttons=self._buttons)
-        self._prev_buttons = None
-        try:
-            self._fd = os.open(device, os.O_RDONLY | os.O_NONBLOCK)
-        except OSError as exc:
-            raise RuntimeError(
-                f"Cannot open the joystick at {device} ({exc}). Check that the pad is plugged in "
-                f"and that the container can see it (ls /dev/input/js*)")
-
-        # A js node is not proof of a gamepad: virtual mice and other devices expose one too, and
-        # their idle axes read full scale, which would hand the policy a running command before the
-        # operator has touched anything.  Refuse rather than drive the robot off a phantom stick.
-        name, axes = self._identify()
-        if axes is not None and axes < self.MIN_AXES:
-            os.close(self._fd)
-            self._fd = None
-            raise RuntimeError(
-                f"{device} is '{name}' with {axes} axes - that is not a gamepad. Check "
-                f"'cat /sys/class/input/js*/device/name' and pass the right one with --joy-device")
-        print(colored(f"Joystick '{name}' on {device}, {axes} axes (read directly, no ROS)",
-                      "green"))
-        print(colored(self.help(), "cyan"))
-
-    def _identify(self):
-        """The device's name and axis count, straight from the joystick ioctls."""
-        name, axes = "unknown", None
-        try:
-            import fcntl
-            buffer = bytearray(1)
-            fcntl.ioctl(self._fd, self.JSIOCGAXES, buffer)
-            axes = buffer[0]
-            buffer = bytearray(128)
-            fcntl.ioctl(self._fd, 0x80006a13 | (len(buffer) << 16), buffer)
-            name = buffer.split(b"\x00")[0].decode(errors="replace") or "unknown"
-        except (OSError, ImportError):
-            pass
-        return name, axes
-
-    def update(self):
-        """Drain the pending joystick events, then apply the inherited mapping."""
-        while True:
-            try:
-                data = os.read(self._fd, self.EVENT_SIZE)
-            except BlockingIOError:
-                break
-            except OSError:
-                break
-            if not data or len(data) < self.EVENT_SIZE:
-                break
-            _, value, kind, number = struct.unpack(self.EVENT_FORMAT, data)
-            if kind & self.JS_EVENT_INIT:
-                # The synthetic events the kernel replays on open describe the device's current
-                # state, which for triggers and for anything that is not a gamepad is full scale.
-                # Starting from neutral means nothing moves until the operator moves it.
-                continue
-            kind &= ~self.JS_EVENT_INIT
-            if kind == self.JS_EVENT_AXIS and number < len(self._axes):
-                # ROS's joy_node negates, and the parent's stick mapping assumes that convention.
-                self._axes[number] = -value / 32767.0
-            elif kind == self.JS_EVENT_BUTTON and number < len(self._buttons):
-                self._buttons[number] = 1 if value else 0
-        super(LinuxJoyCommandInterface, self).update()
-
-    def shutdown(self):
-        if getattr(self, "_fd", None) is not None:
-            try:
-                os.close(self._fd)
-            except OSError:
-                pass
-            self._fd = None
-
-def create_command_interface(kind="keyboard", cfg=None, **kwargs):
-    """Build a command interface.
-
-    Args:
-        kind: ``'keyboard'``, ``'joy'`` (also ``'joystick'``/``'xbox'``) for a pad over the ROS
-            ``/joy`` topic, ``'joydev'`` for the same pad read straight from ``/dev/input/js0``
-            with no ROS involved, or ``'none'``.
-        cfg: optional controller configuration dict (see
-            :mod:`base_controllers.rl_controller_config`); the input-related keys are picked out of
-            it so callers do not have to unpack them by hand.
-        **kwargs: overrides applied on top of ``cfg``.
-    """
-    options = {}
-    if cfg is not None:
-        options["max_lin_vel"] = cfg["max_lin_vel_cmd"]
-        options["max_ang_vel"] = cfg["max_ang_vel_cmd"]
-        options["push_force"] = cfg["push_force"]
-        options["push_force_step"] = cfg["push_force_step"]
-        if kind == "keyboard":
-            options["lin_step"] = cfg["key_lin_step"]
-            options["ang_step"] = cfg["key_ang_step"]
-            options["speed_presets"] = cfg["key_speed_presets"]
-        elif kind in ("joy", "joystick", "xbox", "joydev"):
-            options["dead_zone"] = cfg["joy_dead_zone"]
-    options.update(kwargs)
-
+def create_command_interface(kind, cfg):
+    """``'keyboard'``, ``'joy'`` or ``'none'`` (scripted runs post their own events)."""
+    options = dict(max_lin_vel=cfg["max_lin_vel_cmd"], max_ang_vel=cfg["max_ang_vel_cmd"],
+                   push_force=cfg["push_force"], push_force_step=cfg["push_force_step"])
     if kind == "keyboard":
-        return KeyboardCommandInterface(**options)
-    if kind in ("joy", "joystick", "xbox"):
-        return JoyCommandInterface(**options)
-    if kind == "joydev":
-        return LinuxJoyCommandInterface(**options)
-    if kind in ("none", None):
-        options.pop("dead_zone", None)
-        options.pop("device", None)
-        for key in ("lin_step", "ang_step", "speed_presets"):
-            options.pop(key, None)
-        return NullCommandInterface(**options)
+        return KeyboardCommandInterface(lin_step=cfg["key_lin_step"], ang_step=cfg["key_ang_step"],
+                                        speed_presets=cfg["key_speed_presets"], **options)
+    if kind == "joy":
+        return JoyCommandInterface(dead_zone=cfg["joy_dead_zone"], **options)
+    if kind == "none":
+        return CommandInterfaceBase(**options)
     raise ValueError(f"Unknown command interface '{kind}'")
-
-
-class NullCommandInterface(CommandInterfaceBase):
-    """No operator input: for scripted runs where the caller posts its own events."""
-
-    def __init__(self, max_lin_vel=0.5, max_ang_vel=0.5, push_force=125.0,
-                 push_force_step=25.0):
-        super(NullCommandInterface, self).__init__(max_lin_vel, max_ang_vel, push_force,
-                                                   push_force_step)
-
-    def update(self):
-        pass
-
-    def post(self, event):
-        self._post(event)
