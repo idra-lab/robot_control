@@ -237,10 +237,50 @@ docstring and copied into every result, and `manifest.json` records the policy m
 robot_control commit and diff.
 
 ```bash
-# on the host
+# on the host, from this directory (python3 with numpy, and matplotlib for plot)
 python3 push_sweep.py sweep --robot go2 --out-dir ~/trento_lab_home/push_sweep/go2 \
     --docker mfocchi/trento_lab_framework:locosim --jobs 6
-python3 push_sweep.py plot ~/trento_lab_home/push_sweep/go2        # needs matplotlib
+python3 push_sweep.py plot ~/trento_lab_home/push_sweep/go2
+cp ~/trento_lab_home/push_sweep/go2/push_sweep.{png,csv} push_sweep_results/   # rename to go2.*
 # one pair, inside the container
 python3 push_sweep.py trial --robot go2 --cmd 0.3 0 0 --direction left --out r.json
 ```
+
+A sweep is 128 Gazebo runs, about 40 min at `--jobs 6` on a 24-thread PC. Rerunning the same
+command resumes it; `--repeats N` runs every point N times and plots the median and min-max.
+
+### Push-recovery results
+
+`push_sweep_results/` holds the figure and table of each robot, from 2026-10-26: robot_control
+`c2bbe39`, go2_description `c60362a`, aliengo_description `881565f`, image
+`mfocchi/trento_lab_framework:locosim` (`sha256:74200c4ab13e`), one run per point. All 256 runs
+kept real time and every failure is a fall (tilt or height) or no recovery.
+
+First push not survived. Walking: median over the 31 commands (lowest in brackets). Safe: zero
+command. Training pushes are velocity kicks up to 1 m/s, i.e. 125 N on the Aliengo and 80 N on the
+Go2 for 0.2 s.
+
+| | forward | left | backward | right |
+|---|---|---|---|---|
+| Aliengo, walking | 230 N (200) | 170 N (80) | 300 N (150) | 180 N (120) |
+| Aliengo, safe | 380 N | 280 N | 390 N | 200 N |
+| Go2, walking | 160 N (90) | 80 N (70) | 150 N (80) | 80 N (70) |
+| Go2, safe | 100 N | 120 N | 160 N | 160 N |
+
+![Aliengo push sweep](push_sweep_results/aliengo.png)
+![Go2 push sweep](push_sweep_results/go2.png)
+
+* **Aliengo** recovers well beyond training: as a velocity kick (F x 0.2 s / mass) the medians are
+  1.4 m/s sideways, 1.8 m/s forward and 2.4 m/s backward. Sideways is the weak direction and it
+  gets weaker with speed: walking forward at 0.5 m/s it falls at 80 N pushed left (0.6 m/s). A push
+  along the motion is worse than against it (vy +0.5: 130 N pushed left, 250 N pushed right).
+* **Go2** has no sideways margin: it falls at 70-110 N (median 80 N, 1.0 m/s), at or below 90 N in
+  58 of 62 sideways points, i.e. at the training kick. Forward and backward it takes 1.0-2.5 m/s;
+  at zero command the walking policy falls at 90 N in every direction.
+* **Safe policy**: on the Aliengo it holds about 3 m/s forward and backward at zero command, against
+  1.2-1.8 m/s for the walking policy; on the Go2 only 1.2-2.0 m/s.
+* **Spread**: the earlier Aliengo sweep (three runs per point, previous joint model) gave the same
+  walking medians within 10 N. Single points vary between runs by 2 force steps (20 N) at the
+  median and 5 or more on one in ten points, so read the trends, not individual points.
+* For more sideways margin on the Go2, the likely route is stronger lateral pushes in training, for
+  both tasks.
