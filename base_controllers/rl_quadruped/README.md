@@ -81,8 +81,9 @@ also pins it with `taskset` (useful only on a core isolated with
 
 Keyboard commands are held between key presses and clamped to `max_lin_vel_cmd` /
 `max_ang_vel_cmd` (0.5, the training range). `SPACE` triggers the emergency even while a velocity is
-being typed, which is why the entry uses commas. The default push is the strongest push used in
-training (`body_mass` x 1 m/s over 0.2 s: 125 N Aliengo, 80 N Go2).
+being typed, which is why the entry uses commas. The default push is a 1 m/s kick (`body_mass` x
+1 m/s over 0.2 s: 125 N Aliengo, 80 N Go2), twice the walking task's largest training kick and two
+thirds of the safe task's.
 
 ## State machine
 
@@ -229,58 +230,78 @@ python3 run_sim.py --robot go2 --record go2.npz
 python3 gait_report.py go2.npz --phase fwd0.3
 ```
 
-**Push sweep.** The first push (10 to 400 N in 10 N steps, 0.2 s) the robot does not survive, for
-the walking policy at zero command and on one-axis sweeps of vx, vy, wz from -0.5 to 0.5, and the
-safe policy at zero command, each pushed forward, left, backward and right. Every pair is its own
-Gazebo run; from the host they run in parallel containers. The protocol is in the script's
-docstring and copied into every result, and `manifest.json` records the policy md5s and the
-robot_control commit and diff.
+**Push recovery.** `push_sweep.py` measures, per condition, the push the robot survives half the
+time. A push of strength k (m/s) is a force of `body_mass` x k / 0.2 s held for 0.2 s on the base,
+so k is the velocity kick it gives; training kicked the robot by up to 0.5 m/s per axis in the
+walking task and 1.5 m/s in the safe one. Conditions: the walking policy at zero command and at
+vx, vy or wz = +-0.25 and +-0.5, the safe policy at zero command, each pushed forward, left,
+backward and right.
+
+Every trial is a fresh Gazebo run with exactly one push, at a seeded random moment of the second
+after a 4 s settle, so no trial depends on another. Per condition the sweep is adaptive: one run at
+each coarse level, then three runs every 0.1 m/s inside the gap between the last level always
+survived and the first never survived. `plot` fits a logistic survival curve per condition and
+reports the 50 % point with a parametric-bootstrap 95 % interval, and the same point from two halves
+of the runs as a repeatability check. The protocol is in the script's docstring and in every
+result; `manifest.json` records the design, the policy md5s, the robot_control commit and diff, and
+the image.
 
 ```bash
-# on the host, from this directory (python3 with numpy, and matplotlib for plot)
+# on the host, from this directory (python3 with numpy, scipy and matplotlib)
 python3 push_sweep.py sweep --robot go2 --out-dir ~/trento_lab_home/push_sweep/go2 \
-    --docker mfocchi/trento_lab_framework:locosim --jobs 6
+    --docker mfocchi/trento_lab_framework:locosim --jobs 10
 python3 push_sweep.py plot ~/trento_lab_home/push_sweep/go2
-cp ~/trento_lab_home/push_sweep/go2/push_sweep.{png,csv} push_sweep_results/   # rename to go2.*
-# one pair, inside the container
-python3 push_sweep.py trial --robot go2 --cmd 0.3 0 0 --direction left --out r.json
+# push_sweep.png -> push_sweep_results/go2_sweep.png, push_survival.png -> go2_survival.png,
+# push_sweep.csv -> go2.csv
+# one push, inside the container
+python3 push_sweep.py trial --robot go2 --cmd 0.3 0 0 --direction left --force 100 --out r.json
 ```
 
-A sweep is 128 Gazebo runs, about 40 min at `--jobs 6` on a 24-thread PC. Rerunning the same
-command resumes it; `--repeats N` runs every point N times and plots the median and min-max.
+A sweep is about 1,100 runs per robot, 40 min at `--jobs 10` on a 24-thread PC. Rerunning the
+same command resumes it, and `--command-steps` with other values adds commands to the same folder.
 
 ### Push-recovery results
 
-`push_sweep_results/` holds the figure and table of each robot, from 2026-10-26: robot_control
-`c2bbe39`, go2_description `c60362a`, aliengo_description `881565f`, image
-`mfocchi/trento_lab_framework:locosim` (`sha256:74200c4ab13e`), one run per point. All 256 runs
-kept real time and every failure is a fall (tilt or height) or no recovery.
+From 2026-10-26: robot_control `596f8f2` with this `push_sweep.py`, go2_description `c60362a`,
+aliengo_description `881565f`, image `mfocchi/trento_lab_framework:locosim`
+(`sha256:74200c4ab13e`). 1,076 runs on the Go2 and 1,105 on the Aliengo, no errors, all in real
+time. Figures and tables: `push_sweep_results/<robot>_sweep.png`, `<robot>_survival.png`,
+`<robot>.csv`.
 
-First push not survived. Walking: median over the 31 commands (lowest in brackets). Safe: zero
-command. Training pushes are velocity kicks up to 1 m/s, i.e. 125 N on the Aliengo and 80 N on the
-Go2 for 0.2 s.
+Push survived half the time at zero command, m/s [95 % interval]:
 
 | | forward | left | backward | right |
 |---|---|---|---|---|
-| Aliengo, walking | 230 N (200) | 170 N (80) | 300 N (150) | 180 N (120) |
-| Aliengo, safe | 380 N | 280 N | 390 N | 200 N |
-| Go2, walking | 160 N (90) | 80 N (70) | 150 N (80) | 80 N (70) |
-| Go2, safe | 100 N | 120 N | 160 N | 160 N |
+| Go2, walking | 1.25 [1.20, 1.30] | 1.46 [1.40, 1.50] | 1.31 [1.25, 1.35] | 1.54 [1.50, 1.60] |
+| Go2, safe | 1.15 [1.10, 1.20] | 1.91 [1.85, 1.96] | 2.21 [2.15, 2.25] | 2.18 [2.09, 2.25] |
+| Aliengo, walking | 1.65 [1.60, 1.70] | 1.90 [1.81, 2.05] | 1.63 [1.45, 1.75] | 1.96 [1.90, 2.00] |
+| Aliengo, safe | 2.25 [2.20, 2.30] | 2.61 [2.54, 2.65] | 2.25 [2.08, 2.42] | 2.61 [2.54, 2.65] |
 
-![Aliengo push sweep](push_sweep_results/aliengo.png)
-![Go2 push sweep](push_sweep_results/go2.png)
+![Go2 push recovery](push_sweep_results/go2_sweep.png)
+![Go2 single-push survival](push_sweep_results/go2_survival.png)
+![Aliengo push recovery](push_sweep_results/aliengo_sweep.png)
+![Aliengo single-push survival](push_sweep_results/aliengo_survival.png)
 
-* **Aliengo** recovers well beyond training: as a velocity kick (F x 0.2 s / mass) the medians are
-  1.4 m/s sideways, 1.8 m/s forward and 2.4 m/s backward. Sideways is the weak direction and it
-  gets weaker with speed: walking forward at 0.5 m/s it falls at 80 N pushed left (0.6 m/s). A push
-  along the motion is worse than against it (vy +0.5: 130 N pushed left, 250 N pushed right).
-* **Go2** has no sideways margin: it falls at 70-110 N (median 80 N, 1.0 m/s), at or below 90 N in
-  58 of 62 sideways points, i.e. at the training kick. Forward and backward it takes 1.0-2.5 m/s;
-  at zero command the walking policy falls at 90 N in every direction.
-* **Safe policy**: on the Aliengo it holds about 3 m/s forward and backward at zero command, against
-  1.2-1.8 m/s for the walking policy; on the Go2 only 1.2-2.0 m/s.
-* **Spread**: the earlier Aliengo sweep (three runs per point, previous joint model) gave the same
-  walking medians within 10 N. Single points vary between runs by 2 force steps (20 N) at the
-  median and 5 or more on one in ten points, so read the trends, not individual points.
-* For more sideways margin on the Go2, the likely route is stronger lateral pushes in training, for
-  both tasks.
+* **Walking policy**: it survives at least 0.8 m/s in every condition, 1.6x its 0.5 m/s training
+  kick (lowest: Go2 walking forward at 0.5 m/s pushed left, 0.82; Aliengo walking right at 0.5 m/s
+  pushed right, 0.89).
+* At zero command, sideways pushes are survived better than forward and backward ones on both
+  robots (Go2 1.46-1.54 against 1.25-1.31 m/s, Aliengo 1.90-1.96 against 1.63-1.65).
+* Walking reverses this: with any command, sideways becomes the weak direction (median Go2 0.91,
+  Aliengo 1.37 m/s, against 1.85 and 2.25 forward and backward). A push against the motion is
+  survived best (walking forward at 0.5 m/s pushed backward: Go2 2.40, Aliengo 3.07), a sideways
+  push along a lateral motion worst (walking left at 0.5 m/s pushed left: 0.96 on both).
+* **Safe policy**: better than the walking policy at zero command in every direction but one. The
+  Aliengo holds 2.25-2.61 m/s, 1.5-1.7x its 1.5 m/s training kick, more sideways than forward and
+  backward, and identically left and right push for push (the policies are trained with left-right
+  symmetry). The Go2 holds 1.9-2.2 m/s except pushed forward: 1.15 m/s, below its training kick,
+  with every forward push from 1.2 m/s up falling. That is the one clear weakness.
+* **Repeatability**: the two halves of the runs give the same 50 % point within 0.05 m/s at the
+  median (90 % of conditions within 0.12 on the Go2 and 0.15 on the Aliengo, largest 0.20 and
+  0.37), and both halves fall inside the 95 % interval +-0.1 m/s in all 112 conditions. The median
+  interval is 0.11 m/s (Go2) and 0.15 m/s (Aliengo). A wide interval means survival changes
+  gradually with the push, because the outcome depends on where in the stride the push lands
+  (e.g. Aliengo walking forward at 0.5 m/s, pushed left).
+* The test push is a 0.2 s force at the base origin, while training changed the base velocity
+  instantly and the safe task also kicked the vertical and angular velocities: compare trends and
+  directions, not absolute margins.

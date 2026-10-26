@@ -93,7 +93,8 @@ DEFAULTS = {
     "max_joint_vel": None,        # rad/s
 
     # --- pushes (simulation) ---------------------------------------------------------------------
-    # None: body_mass * 1 m/s / push_duration, the strongest push used in training.
+    # None: body_mass * 1 m/s / push_duration, a 1 m/s kick: twice the walking task's largest
+    # training kick (0.5 m/s), two thirds of the safe task's (1.5 m/s).
     "push_force": None,           # N
     "push_force_step": None,      # N per -/+ press, None = push_force / 5
     "push_duration": 0.2,         # s

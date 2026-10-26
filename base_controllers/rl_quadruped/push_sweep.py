@@ -1,33 +1,41 @@
-"""Push-recovery sweep in Gazebo: the largest shove a policy survives, per command and direction.
+"""Push recovery in Gazebo: how strong a push each policy survives, per velocity command and direction.
 
-    python3 push_sweep.py sweep --robot go2 --out-dir ~/push_sweep/go2 --docker IMAGE --jobs 6
-    python3 push_sweep.py plot ~/push_sweep/go2
+    python3 push_sweep.py sweep --robot go2 --out-dir ~/trento_lab_home/push_sweep/go2 \\
+        --docker mfocchi/trento_lab_framework:locosim --jobs 8
+    python3 push_sweep.py plot ~/trento_lab_home/push_sweep/go2
 
-For each (variant, command, push direction) the robot is stood up, handed to the policy and pushed
-at 10, 20, 30 ... 400 N, one shove at a time, until it falls.  The result is the first force it
-does not survive.  The grid: the ``normal`` variant at zero command and on one-axis sweeps of vx,
-vy and wz from -0.5 to 0.5 in steps of 0.1, the ``safe`` variant at zero command, each pushed
-forward, left, backward and right in the base frame.
+A push of strength k (m/s) is a force of body_mass x k / 0.2 s held for 0.2 s at the base origin,
+in a base-frame direction: forward, left, backward or right.  Training kicked the base velocity by
+up to ``TRAINING_KICK`` per horizontal axis: 0.5 m/s in the walking task, 1.5 m/s in the safe one.
 
-Protocol (constants below, also written into every result):
+Conditions: the walking policy (``normal``) at zero command and at vx, vy or wz = +-``--command-steps``
+(one axis at a time), and the safe policy at zero command, each pushed in the four directions.
 
-1. Fold, stand up, start the policy (``safe``: then the safe stop), hold the command ``SETTLE_S``;
-   the mean base height over its last second is h0.  A fall here fails at 0 N.
-2. Per force: push the base for ``push_duration`` (0.2 s), watch ``WATCH_S``, then wait up to
-   ``RECOVER_TIMEOUT_S`` for recovery.
-3. Fallen: the controller left the policy states, or |roll| or |pitch| > ``FALL_TILT``, or the base
-   below ``FALL_HEIGHT`` x h0.  Recovered: tilt < ``RECOVER_TILT``, |omega_xy| < ``RECOVER_RATE``
-   and the base above ``RECOVER_HEIGHT`` x h0, continuously for ``RECOVER_HOLD_S``.
+Every trial is one Gazebo run with exactly one push, so no trial depends on another:
 
-All waits are on simulated time.  A fall ends the controller (DAMPING, DONE), so each pair is its
-own Gazebo run; ``--docker`` runs them in parallel containers with separate ROS masters.  Pushes
-land at an arbitrary gait phase, so repeats can differ by a force step or two: ``--repeats N``
-plots the median and min-max.  A sweep resumes where it stopped (existing results are skipped) and
-appends to ``manifest.json`` the protocol, the policy md5s, the robot_control commit and diff, and
-the docker image.
+1. Stand up, start the policy (safe: then the safe stop), hold the command ``SETTLE_S``; h0 is the
+   mean base height over its last second.
+2. Push at a moment of the next ``ONSET_JITTER_S`` drawn from a seed fixed by the trial's name.
+3. Fallen: the controller left the policy states, |roll| or |pitch| > ``FALL_TILT``, or the base
+   below ``FALL_HEIGHT`` x h0.  Survived: within ``WATCH_S`` + ``RECOVER_TIMEOUT_S`` the robot holds
+   tilt < ``RECOVER_TILT``, |omega_xy| < ``RECOVER_RATE`` and height > ``RECOVER_HEIGHT`` x h0 for
+   ``RECOVER_HOLD_S``.
 
-Output: ``manifest.json``, ``trials/<pair>.json``, ``logs/<pair>.log``, and from ``plot``
-``push_sweep.png`` and ``push_sweep.csv``.
+Per condition the sweep is adaptive: ``--coarse-runs`` runs at every ``COARSE_KICKS`` level, more
+levels in ``EXTEND_STEP`` up to ``MAX_KICK`` while the robot still survives the top one, then
+``--fine-runs`` runs at every ``FINE_STEP`` inside the gap between the last level it always survived
+and the first it never did.  ``plot`` fits P(survive) = 1 / (1 + exp((k - k50) / scale)) per
+condition and reports k50, the push survived half the time, with a bootstrap 95 % interval (the gap
+itself when the outcomes are separated), and k50 from two halves of the runs (every other run at
+each kick level) as a repeatability check.
+
+All waits are on simulated time; ``--docker`` runs every trial in its own container.  The sweep
+resumes where it stopped and appends to ``manifest.json`` the design, the protocol, the policy md5s,
+the robot_control commit and diff, and the docker image.
+
+Output: ``manifest.json``, ``trials/<name>.json``, ``logs/<name>.log``; from ``plot``
+``push_sweep.png`` (k50 per command and direction), ``push_survival.png`` (survival curves at zero
+command) and ``push_sweep.csv``.
 """
 
 import argparse
@@ -42,6 +50,7 @@ import subprocess
 import sys
 import threading
 import time as wall
+import zlib
 
 # One thread for the numeric libraries (before numpy): parallel trials otherwise starve each other.
 for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
@@ -55,12 +64,19 @@ POLICY_DIR = os.path.join(HERE, "policies")
 # =================================================================================================
 # protocol
 # =================================================================================================
-FORCES = tuple(range(10, 401, 10))      # N, in the order they are applied
+# Largest kick per horizontal axis of push_by_setting_velocity in training (safe_rl
+# velocity_env_cfg.py and safe_env_cfg.py), m/s.
+TRAINING_KICK = {"normal": 0.5, "safe": 1.5}
 DIRECTIONS = {"forward": 0.0, "left": 90.0, "backward": 180.0, "right": 270.0}   # deg, base frame
-COMMAND_STEPS = tuple(round(0.1 * i, 1) for i in range(-5, 6))   # m/s or rad/s, per axis
 COMMAND_AXES = ("vx", "vy", "wz")
-SETTLE_S = 4.0            # s of command before the first push
-WATCH_S = 3.0             # s watched for a fall after each push
+COARSE_KICKS = {"normal": (0.25, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0),
+                "safe": (0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0)}   # m/s
+EXTEND_STEP = 0.5         # m/s, added above the coarse levels while the robot survives the top one
+MAX_KICK = 6.0            # m/s
+FINE_STEP = 0.1           # m/s, inside the survived-to-fallen gap
+SETTLE_S = 4.0            # s of command before the push
+ONSET_JITTER_S = 1.0      # s, the push lands at a seeded random moment of this window
+WATCH_S = 3.0             # s watched for a fall after the push
 FALL_TILT = 1.0           # rad of |roll| or |pitch|
 FALL_HEIGHT = 0.5         # x h0
 RECOVER_TILT = 0.2        # rad
@@ -71,9 +87,10 @@ RECOVER_TIMEOUT_S = 4.0   # s after the watch window
 STARTUP_TIMEOUT_S = 240.0  # wall s to get from launch to the policy running
 
 PROTOCOL = {k: v for k, v in globals().items()
-            if k in ("FORCES", "DIRECTIONS", "COMMAND_STEPS", "SETTLE_S", "WATCH_S", "FALL_TILT",
-                     "FALL_HEIGHT", "RECOVER_TILT", "RECOVER_RATE", "RECOVER_HEIGHT",
-                     "RECOVER_HOLD_S", "RECOVER_TIMEOUT_S")}
+            if k in ("TRAINING_KICK", "DIRECTIONS", "COARSE_KICKS", "EXTEND_STEP", "MAX_KICK",
+                     "FINE_STEP", "SETTLE_S", "ONSET_JITTER_S", "WATCH_S", "FALL_TILT", "FALL_HEIGHT",
+                     "RECOVER_TILT", "RECOVER_RATE", "RECOVER_HEIGHT", "RECOVER_HOLD_S",
+                     "RECOVER_TIMEOUT_S")}
 
 CONTAINER_ENV = ("source /opt/ros/noetic/setup.bash && source /root/ros_ws/install/setup.bash && "
                  "export LOCOSIM_DIR=/root/ros_ws/src/locosim ROS_LOG_DIR=/tmp/roslog "
@@ -83,25 +100,35 @@ CONTAINER_ENV = ("source /opt/ros/noetic/setup.bash && source /root/ros_ws/insta
 """The image's interactive bashrc, for the non-interactive shell of a trial."""
 
 
-def grid(repeats=1):
-    """Every (variant, command, direction, repeat) of the sweep, interleaved by direction."""
-    conditions = [("normal", (0.0, 0.0, 0.0))]
-    for axis in range(3):
-        for value in COMMAND_STEPS:
-            if value != 0.0:
-                command = [0.0, 0.0, 0.0]
-                command[axis] = value
-                conditions.append(("normal", tuple(command)))
-    conditions.append(("safe", (0.0, 0.0, 0.0)))
-    return [(variant, command, direction, repeat)
-            for repeat in range(repeats)
-            for variant, command in conditions
-            for direction in DIRECTIONS]
+def trial_name(variant, command, direction, kick, run):
+    """Also the seed of the push moment, so a rerun pushes at the same instants."""
+    name = f"{variant}_{direction}_k{kick:.2f}_r{run}"
+    if any(command):
+        name += "_vx{:+.2f}_vy{:+.2f}_wz{:+.2f}".format(*command)
+    return name
 
 
-def trial_name(variant, command, direction, repeat):
-    vx, vy, wz = command
-    return f"{variant}_vx{vx:+.1f}_vy{vy:+.1f}_wz{wz:+.1f}_{direction}_r{repeat}"
+def conditions(variants, command_steps):
+    """(variant, command): the walking policy at zero command and on one-axis commands, the safe
+    policy at zero command."""
+    out = []
+    if "normal" in variants:
+        out.append(("normal", (0.0, 0.0, 0.0)))
+        for axis in range(3):
+            for step in command_steps:
+                for sign in (-1.0, 1.0):
+                    command = [0.0, 0.0, 0.0]
+                    command[axis] = sign * step
+                    out.append(("normal", tuple(command)))
+    if "safe" in variants:
+        out.append(("safe", (0.0, 0.0, 0.0)))
+    return out
+
+
+def robot_config(robot):
+    sys.path.insert(0, os.path.join(HERE, "..", ".."))
+    from base_controllers.rl_quadruped.rl_controller_config import get_config
+    return get_config(robot)
 
 
 def policy_files(robot):
@@ -131,7 +158,6 @@ def run_trial(args):
     direction = DIRECTIONS[args.direction]
     if args.variant == "safe" and any(command):
         sys.exit("the safe variant only runs at the zero command")
-    forces = [f for f in FORCES if f <= args.max_force]
 
     controller = RlQuadrupedController(args.robot, input_device="none", skip_calibration=True,
                                        use_rviz=False, realtime=False)
@@ -140,12 +166,11 @@ def run_trial(args):
     result = {
         "robot": args.robot, "variant": args.variant,
         "command": command, "direction": args.direction, "direction_deg": direction,
-        "repeat": args.repeat,
-        "push_duration": controller.cfg["push_duration"],
-        "training_push_force": controller.cfg["body_mass"] * 1.0 / controller.cfg["push_duration"],
+        "repeat": args.repeat, "seed": args.seed, "onset_delay": None,
+        "push_duration": controller.cfg["push_duration"], "body_mass": controller.cfg["body_mass"],
         "kp": controller.policy.cfg["kp"], "kd": controller.policy.cfg["kd"],
         "policy_md5": {os.path.basename(p): md5(p) for p in policy_files(args.robot)},
-        "protocol": PROTOCOL, "forces_planned": forces,
+        "protocol": PROTOCOL, "forces_planned": [args.force],
         "h0": None, "pushes": [], "failure_force": None, "failure_reason": None,
         "max_survived": None, "error": None,
     }
@@ -220,7 +245,7 @@ def run_trial(args):
 
     def finish():
         if result["failure_force"] is None and result["error"] is None:
-            result["max_survived"] = forces[-1] if forces else 0
+            result["max_survived"] = args.force
         result["wall_s"] = wall.monotonic() - wall_start
         try:
             result["sim_s"] = sim_now() - sim_start if sim_start is not None else None
@@ -234,7 +259,7 @@ def run_trial(args):
         outcome = (f"fails at {result['failure_force']} N ({result['failure_reason']})"
                    if result["failure_force"] is not None else
                    f"error: {result['error']}" if result["error"] else
-                   f"survived every push up to {result['max_survived']} N")
+                   f"survived {args.force} N")
         print(f"push_sweep: {os.path.basename(args.out)}: {outcome}", flush=True)
         controller.command.post(Event.QUIT)
 
@@ -270,34 +295,35 @@ def run_trial(args):
             while sim_now() - start < SETTLE_S:
                 reason = fall_reason(None)
                 if reason:
-                    result.update(failure_force=0, failure_reason=reason, max_survived=None)
+                    result.update(failure_force=0, failure_reason=reason)
                     return
                 if sim_now() - start > SETTLE_S - 1.0:
                     heights.append(snapshot()[0])
                 wall.sleep(0.002)
             h0 = result["h0"] = float(np.mean(heights))
 
-            for force in forces:
-                push_time = sim_now()
-                stats = {"force": force, "peak_tilt": 0.0, "min_height": np.inf, "peak_rate": 0.0,
-                         "calm_since": None}
-                push(apply_wrench, force)
-                reason = observe(controller.cfg["push_duration"] + WATCH_S, h0, stats)
+            stats = {"force": args.force, "peak_tilt": 0.0, "min_height": np.inf,
+                     "peak_rate": 0.0, "calm_since": None}
+            delay = float(np.random.default_rng(args.seed).uniform(0.0, ONSET_JITTER_S))
+            result["onset_delay"] = delay
+            reason = observe(delay, h0, dict(stats))
+            if reason:
+                result.update(failure_force=0, failure_reason=reason)
+                return
+            push_time = sim_now()
+            push(apply_wrench, args.force)
+            reason = observe(controller.cfg["push_duration"] + WATCH_S, h0, stats)
+            if reason is None and not recovered(stats):
+                reason = observe(RECOVER_TIMEOUT_S, h0, stats, until_recovered=True)
                 if reason is None and not recovered(stats):
-                    reason = observe(RECOVER_TIMEOUT_S, h0, stats, until_recovered=True)
-                    if reason is None and not recovered(stats):
-                        reason = "no recovery"
-                stats["outcome"] = "survived" if reason is None else reason
-                # from the push to the start of the calm stretch that counted as recovered
-                stats["recovery_time"] = (stats["calm_since"] - push_time
-                                          if reason is None else None)
-                del stats["calm_since"]
-                result["pushes"].append(stats)
-                if reason is not None:
-                    result["failure_force"], result["failure_reason"] = force, reason
-                    result["max_survived"] = max([p["force"] for p in result["pushes"]
-                                                  if p["outcome"] == "survived"], default=0)
-                    return
+                    reason = "no recovery"
+            stats["outcome"] = "survived" if reason is None else reason
+            # from the push to the start of the calm stretch that counted as recovered
+            stats["recovery_time"] = stats["calm_since"] - push_time if reason is None else None
+            del stats["calm_since"]
+            result["pushes"].append(stats)
+            if reason is not None:
+                result["failure_force"], result["failure_reason"] = args.force, reason
         except Exception as exc:                        # reported in the result, not lost
             result["error"] = f"{type(exc).__name__}: {exc}"
         finally:
@@ -339,54 +365,82 @@ def to_container(path, lab_home):
     return "/root/" + rel
 
 
+def load_results(out_dir):
+    results = []
+    for path in sorted(glob.glob(os.path.join(out_dir, "trials", "*.json"))):
+        with open(path) as f:
+            results.append(json.load(f))
+    return results
+
+
+def kick_of(r):
+    return round(r["forces_planned"][0] * r["push_duration"] / r["body_mass"], 2)
+
+
+def outcomes(out_dir):
+    """(variant, command, direction) -> {kick: [survived per run]}, errored runs left out."""
+    table = {}
+    for r in load_results(out_dir):
+        if r["error"]:
+            continue
+        key = (r["variant"], tuple(r["command"]), r["direction"])
+        table.setdefault(key, {}).setdefault(kick_of(r), []).append(r["failure_force"] is None)
+    return table
+
+
+def gap(levels):
+    """(highest kick survived by every run at it and below, lowest kick fallen by every run at it
+    and above); None for the upper end while some run survives the top level."""
+    kicks = sorted(levels)
+    low = max([k for k in kicks if all(all(levels[j]) for j in kicks if j <= k)], default=0.0)
+    high = min([k for k in kicks if not any(any(levels[j]) for j in kicks if j >= k)], default=None)
+    return low, high
+
+
 def run_sweep(args):
+    cfg = robot_config(args.robot)
+    mass, duration = cfg["body_mass"], cfg["push_duration"]
     out_dir = os.path.abspath(os.path.expanduser(args.out_dir))
     lab_home = os.path.abspath(os.path.expanduser(args.lab_home))
     os.makedirs(os.path.join(out_dir, "trials"), exist_ok=True)
     os.makedirs(os.path.join(out_dir, "logs"), exist_ok=True)
     if not args.docker and args.jobs > 1:
         sys.exit("without --docker the trials share one ROS master and one Gazebo: use --jobs 1")
+    cases = [(variant, command, direction) for variant, command in
+             conditions(args.variants, args.command_steps) for direction in DIRECTIONS]
 
     image_id = None
     if args.docker:
         image_id = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", args.docker],
                                   capture_output=True, text=True).stdout.strip() or None
-    todo = []
-    for variant, command, direction, repeat in grid(args.repeats):
-        name = trial_name(variant, command, direction, repeat)
-        out = os.path.join(out_dir, "trials", name + ".json")
-        if not os.path.exists(out):
-            todo.append((name, variant, command, direction, repeat, out))
-
-    # one entry per invocation: a resumed sweep may run on a later commit
     manifest_path = os.path.join(out_dir, "manifest.json")
     sweeps = []
     if os.path.exists(manifest_path):
         with open(manifest_path) as f:
-            previous = json.load(f)
-        sweeps = previous.get("sweeps", [previous])     # a single-entry manifest of the old format
+            sweeps = json.load(f).get("sweeps", [])
     sweeps.append({
         "created": datetime.datetime.now().isoformat(timespec="seconds"),
-        "command_line": " ".join(sys.argv),
-        "robot": args.robot, "repeats": args.repeats,
-        "max_force": args.max_force, "protocol": PROTOCOL,
+        "command_line": " ".join(sys.argv), "robot": args.robot, "variants": args.variants,
+        "command_steps": args.command_steps, "coarse_runs": args.coarse_runs,
+        "fine_runs": args.fine_runs, "protocol": PROTOCOL,
         "policy_md5": {os.path.basename(p): md5(p) for p in policy_files(args.robot)},
         "robot_control_git": git_state(os.path.join(HERE, "..", "..")),
         "docker_image": args.docker, "docker_image_id": image_id,
-        "trials_run": [item[0] for item in todo],
     })
     with open(manifest_path, "w") as f:
         json.dump({"sweeps": sweeps}, f, indent=1)
 
-    total = len(grid(args.repeats))
-    print(f"push_sweep: {total - len(todo)} of {total} pairs already done, {len(todo)} to run "
-          f"({args.jobs} at a time) -> {out_dir}", flush=True)
+    def trial(variant, command, direction, kick, run):
+        name = trial_name(variant, command, direction, kick, run)
+        force = round(mass * kick / duration, 1)
+        seed = zlib.crc32(f"{args.robot}/{name}".encode())
+        trial_args = ["trial", "--robot", args.robot, "--variant", variant,
+                      "--cmd", *[f"{c:.2f}" for c in command], "--direction", direction,
+                      "--force", str(force), "--seed", str(seed), "--repeat", str(run)]
+        return name, trial_args, os.path.join(out_dir, "trials", name + ".json")
 
     def launch(item):
-        name, variant, command, direction, repeat, out = item
-        trial_args = ["trial", "--robot", args.robot, "--variant", variant,
-                      "--cmd", *[f"{c:.1f}" for c in command], "--direction", direction,
-                      "--repeat", str(repeat), "--max-force", str(args.max_force)]
+        name, trial_args, out = item
         log_path = os.path.join(out_dir, "logs", name + ".log")
         container = None
         if args.docker:
@@ -409,23 +463,50 @@ def run_sweep(args):
                 log.write(f"\npush_sweep: trial timed out after {args.trial_timeout} s\n")
                 if container:
                     subprocess.run(["docker", "kill", container], capture_output=True)
-        if os.path.exists(out):
-            with open(out) as f:
-                r = json.load(f)
-            return name, (f"fails at {r['failure_force']} N ({r['failure_reason']})"
-                          if r["failure_force"] is not None else
-                          f"ERROR {r['error']}" if r["error"] else f"survived {r['max_survived']} N")
-        return name, f"no result, see {log_path}"
+        if not os.path.exists(out):
+            return name, f"no result, see {log_path}"
+        with open(out) as f:
+            r = json.load(f)
+        return name, (f"ERROR {r['error']}" if r["error"] else
+                      f"fell ({r['failure_reason']})" if r["failure_force"] is not None else
+                      "survived")
 
-    done = total - len(todo)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        for name, outcome in pool.map(launch, todo):
-            done += 1
-            print(f"push_sweep: [{done}/{total}] {name}: {outcome}", flush=True)
+    def run_stage(stage, wanted):
+        """``wanted`` = [(variant, command, direction, kick, runs)]: top every level up to ``runs``."""
+        items = []
+        for variant, command, direction, kick, runs in wanted:
+            for run in range(runs):
+                item = trial(variant, command, direction, kick, run)
+                if not os.path.exists(item[2]):
+                    items.append(item)
+        print(f"push_sweep: {stage}: {len(items)} trials to run ({args.jobs} at a time)", flush=True)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            for done, (name, result) in enumerate(pool.map(launch, items), 1):
+                print(f"push_sweep: {stage} [{done}/{len(items)}] {name}: {result}", flush=True)
+
+    run_stage("coarse", [(v, c, d, k, args.coarse_runs) for v, c, d in cases for k in COARSE_KICKS[v]])
+    while True:
+        table = outcomes(out_dir)
+        extend = []
+        for v, c, d in cases:
+            levels = table.get((v, c, d), {})
+            top = max(levels, default=0.0)
+            if levels and any(levels[top]) and top + EXTEND_STEP <= MAX_KICK + 1e-9:
+                extend.append((v, c, d, round(top + EXTEND_STEP, 2), args.coarse_runs))
+        if not extend:
+            break
+        run_stage("extend", extend)
+    fine = []
+    for v, c, d in cases:
+        low, high = gap(table.get((v, c, d), {}))
+        if high is not None:
+            steps = int(round((high - low) / FINE_STEP))
+            fine += [(v, c, d, round(low + FINE_STEP * i, 2), args.fine_runs) for i in range(1, steps)]
+    run_stage("fine", fine)
 
 
 # =================================================================================================
-# the figure
+# analysis and figures
 # =================================================================================================
 DIRECTION_STYLE = {   # fixed categorical order: colour and marker follow the direction everywhere
     "forward": ("#2a78d6", "o"), "left": ("#eb6834", "s"),
@@ -433,171 +514,232 @@ DIRECTION_STYLE = {   # fixed categorical order: colour and marker follow the di
 INK, INK_2, GRID, SURFACE = "#0b0b0b", "#52514e", "#e4e3df", "#fcfcfb"
 
 
-def load_results(out_dir):
-    results = []
-    for path in sorted(glob.glob(os.path.join(out_dir, "trials", "*.json"))):
-        with open(path) as f:
-            results.append(json.load(f))
-    return results
+def fit_survival(kicks, survived, rng=None, boot=1000):
+    """Logistic P(survive) = 1 / (1 + exp((k - k50) / scale)) by maximum likelihood, with a
+    parametric bootstrap 95 % interval on k50: outcomes simulated from the fit at the same kicks and
+    runs, then refitted.  The scale is bounded below, so a sharp threshold gives k50 in the gap
+    between the last survived and the first fallen kick, and that gap is then the interval."""
+    from scipy.optimize import minimize
+    kicks, survived = np.asarray(kicks, float), np.asarray(survived, float)
+
+    def fit(k, y):
+        # logit P(survive) = a + b k, convex in (a, b); scale = -1/b >= 0.02 m/s
+        def nll(p):
+            z = p[0] + p[1] * k
+            return np.sum(np.logaddexp(0.0, z) - y * z)
+
+        def grad(p):
+            r = 1.0 / (1.0 + np.exp(-(p[0] + p[1] * k))) - y
+            return np.array([r.sum(), (r * k).sum()])
+        a, b = minimize(nll, [2.0, -1.0], jac=grad, method="L-BFGS-B",
+                        bounds=[(None, None), (-50.0, -1e-3)]).x
+        return -a / b, -1.0 / b
+
+    k50, scale = fit(kicks, survived)
+    if not boot:
+        return float(k50), float(scale), float("nan"), float("nan")
+    if survived.any() and not survived.all() and kicks[survived > 0.5].max() < kicks[survived < 0.5].min():
+        # separated: k50 is anywhere in the gap, and the resolution is the kick spacing
+        return float(k50), float(scale), float(kicks[survived > 0.5].max()), float(kicks[survived < 0.5].min())
+    rng = rng or np.random.default_rng(0)
+    p_survive = 1.0 / (1.0 + np.exp(np.clip((kicks - k50) / scale, -50, 50)))
+    samples = [fit(kicks, (rng.random(len(kicks)) < p_survive).astype(float))[0] for _ in range(boot)]
+    low, high = np.percentile(samples, [2.5, 97.5])
+    return float(k50), float(scale), float(low), float(high)
 
 
-def outcome(r):
-    """``(force, survived_every_push)`` for one result, or None if the run errored.  A run that
-    survived every push is drawn at the largest force it took, with an open marker - which is not
-    the same thing as failing at that force, so the flag travels with the number."""
-    if r["error"]:
-        return None
-    if r["failure_force"] is not None:
-        return float(r["failure_force"]), False
-    return float(r["forces_planned"][-1]), True
+def analyse(results):
+    """One row per (variant, command, direction) with the fit, or the bound when it never fell."""
+    data = {}
+    for r in results:
+        key = (r["variant"], tuple(r["command"]), r["direction"])
+        data.setdefault(key, []).append((kick_of(r), r["failure_force"] is None, r["repeat"]))
+    rows = {}
+    for key, points in sorted(data.items()):
+        kicks, survived, runs = (np.array(x) for x in zip(*points))
+        row = dict(pushes=len(points), points=points, censored=None)
+        if survived.all():
+            row.update(k50=kicks.max(), low=kicks.max(), high=np.inf, scale=np.nan, censored="above")
+        elif not survived.any():
+            row.update(k50=kicks.min(), low=0.0, high=kicks.min(), scale=np.nan, censored="below")
+        else:
+            row["k50"], row["scale"], row["low"], row["high"] = fit_survival(kicks, survived)
+        # Repeatability: two halves taking every other run at each kick level; a level with a
+        # single run (the coarse ones, far from the transition) is in both.
+        half = np.zeros(len(points), dtype=int)
+        for level in set(kicks):
+            index = np.flatnonzero(kicks == level)
+            half[index[np.argsort(runs[index])]] = [i % 2 if len(index) > 1 else -1
+                                                   for i in range(len(index))]
+        halves = []
+        for h in (0, 1):
+            mask = (half == h) | (half == -1)
+            k50_half, scale_half = fit_survival(kicks[mask], survived[mask], boot=0)[:2]
+            informative = 0 < survived[mask].mean() < 1 and scale_half < 2.0
+            halves.append(k50_half if informative else np.nan)
+        row["halves"] = halves
+        rows[key] = row
+    return rows
 
 
-def spread_labels(entries, min_gap):
-    """Nudge end-of-line labels ``[(y, text)]`` apart so no two are closer than ``min_gap``."""
-    placed = []
-    for y, text in sorted(entries):
-        if placed and y - placed[-1][0] < min_gap:
-            y = placed[-1][0] + min_gap
-        placed.append((y, text))
-    return placed
+def style(ax):
+    ax.set_facecolor(SURFACE)
+    ax.grid(axis="y", color=GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
 
 
 def run_plot(args):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.transforms import blended_transform_factory
 
     out_dir = os.path.abspath(os.path.expanduser(args.out_dir))
     results = load_results(out_dir)
+    errors = [r for r in results if r["error"]]
+    results = [r for r in results if not r["error"]]
     if not results:
         sys.exit(f"no results in {out_dir}/trials")
-    errors = [r for r in results if r["error"]]
-    ceiling = max(max(r["forces_planned"]) for r in results)
-    training = results[0]["training_push_force"]
-    robot = results[0]["robot"]
+    robot, mass, duration = results[0]["robot"], results[0]["body_mass"], results[0]["push_duration"]
+    rtf = [r["real_time_factor"] for r in results if r.get("real_time_factor")]
+    rows = analyse(results)
 
-    # (variant, command, direction) -> [(failure force, survived every push) per repeat]
-    table = {}
-    for r in results:
-        value = outcome(r)
-        if value is not None:
-            table.setdefault((r["variant"], tuple(r["command"]), r["direction"]), []).append(value)
-
-    def summary(key):
-        """median, min, max of the plotted force, repeats, and whether every repeat survived."""
-        values = table.get(key)
-        if not values:
-            return None
-        forces = [force for force, _ in values]
-        return (float(np.median(forces)), min(forces), max(forces), len(values),
-                all(survived for _, survived in values))
-
-    # the table view: every number the figure draws
     csv_path = os.path.join(out_dir, "push_sweep.csv")
     with open(csv_path, "w") as f:
-        f.write("variant,vx,vy,wz,direction,first_push_not_survived_median_N,min_N,max_N,repeats,"
-                "repeats_that_survived_every_push\n")
-        for key in sorted(table):
-            variant, command, direction = key
-            med, low, high, n, _ = summary(key)
-            survived = sum(1 for _, s in table[key] if s)
-            f.write(f"{variant},{command[0]:.1f},{command[1]:.1f},{command[2]:.1f},{direction},"
-                    f"{med:.0f},{low:.0f},{high:.0f},{n},{survived}\n")
+        f.write("variant,vx,vy,wz,direction,pushes,kick50_mps,ci95_low_mps,ci95_high_mps,force50_N,"
+                "scale_mps,censored,kick50_half_a_mps,kick50_half_b_mps\n")
+        for (variant, command, direction), r in rows.items():
+            f.write(f"{variant},{command[0]:.2f},{command[1]:.2f},{command[2]:.2f},{direction},"
+                    f"{r['pushes']},{r['k50']:.3f},{r['low']:.3f},{r['high']:.3f},"
+                    f"{r['k50'] * mass / duration:.0f},{r['scale']:.3f},{r['censored'] or ''},"
+                    f"{r['halves'][0]:.3f},{r['halves'][1]:.3f}\n")
 
     plt.rcParams.update({"font.size": 10, "axes.edgecolor": INK_2, "axes.labelcolor": INK,
                          "xtick.color": INK_2, "ytick.color": INK_2, "text.color": INK})
+    finite = [v for r in rows.values() for v in (r["k50"], r["low"], r["high"]) if np.isfinite(v)]
+    top = 1.1 * max(finite + [TRAINING_KICK["safe"]])
+    dashed = dict(color=INK_2, linewidth=1, linestyle=(0, (4, 3)), zorder=1)
+    force_of = (lambda k: k * mass / duration, lambda f: f * duration / mass)
+
+    def mark(ax, x, row, colour, marker, label=None):
+        """k50 with its interval; an open marker is a bound (never fell, or always fell)."""
+        err = [[row["k50"] - row["low"]], [min(row["high"], top) - row["k50"]]]
+        ax.errorbar([x], [row["k50"]], yerr=err, color=colour, marker=marker, markersize=6,
+                    markerfacecolor=SURFACE if row["censored"] else colour,
+                    markeredgecolor=colour if row["censored"] else SURFACE, markeredgewidth=1.2,
+                    capsize=2, elinewidth=1, linestyle="none", zorder=3, label=label)
+
+    # --- k50 per command and direction ----------------------------------------------------------
     fig, axes = plt.subplots(1, 4, figsize=(17, 4.8), sharey=True,
-                             gridspec_kw={"width_ratios": [3, 3, 3, 1.6]})
+                             gridspec_kw={"width_ratios": [3, 3, 3, 1.8]})
     fig.patch.set_facecolor(SURFACE)
     labels = {"vx": "forward velocity command (m/s)", "vy": "lateral velocity command (m/s)",
               "wz": "yaw-rate command (rad/s)"}
-    top = ceiling * 1.08
-    for ax in axes:
-        ax.set_facecolor(SURFACE)
-        ax.grid(axis="y", color=GRID, linewidth=0.8)
-        ax.set_axisbelow(True)
-        for side in ("top", "right"):
-            ax.spines[side].set_visible(False)
-        ax.axhline(training, color=INK_2, linewidth=1, linestyle=(0, (4, 3)), zorder=1)
-        ax.set_ylim(0, top)
-
-    repeats = max(len(v) for v in table.values())
     for axis_index, (ax, axis) in enumerate(zip(axes[:3], COMMAND_AXES)):
-        end_labels = []
-        x_end = COMMAND_STEPS[-1]
+        style(ax)
+        ax.axhline(TRAINING_KICK["normal"], **dashed)
+        values = sorted({c[axis_index] for (v, c, _) in rows if v == "normal"
+                         and all(x == 0 for i, x in enumerate(c) if i != axis_index)})
         for direction, (colour, marker) in DIRECTION_STYLE.items():
-            xs, med, low, high, open_x, open_y = [], [], [], [], [], []
-            for value in COMMAND_STEPS:
+            xs, ys = [], []
+            for value in values:
                 command = [0.0, 0.0, 0.0]
                 command[axis_index] = value
-                s = summary(("normal", tuple(command), direction))
-                if s is None:
+                row = rows.get(("normal", tuple(command), direction))
+                if row is None:
                     continue
-                xs.append(value)
-                med.append(s[0])
-                low.append(s[0] - s[1])
-                high.append(s[2] - s[0])
-                if s[4]:
-                    open_x.append(value)
-                    open_y.append(s[0])
-            if not xs:
-                continue
-            ax.errorbar(xs, med, yerr=[low, high] if repeats > 1 else None, color=colour,
-                        linewidth=1.6, marker=marker, markersize=6, markerfacecolor=colour,
-                        markeredgecolor=SURFACE, markeredgewidth=1.2, capsize=2, elinewidth=1,
-                        label=direction, zorder=3)
-            ax.plot(open_x, open_y, linestyle="none", marker=marker, markersize=6,
-                    markerfacecolor=SURFACE, markeredgecolor=colour, markeredgewidth=1.6, zorder=4)
-            end_labels.append((med[-1], direction))
-            x_end = xs[-1]
-        for y, text in spread_labels(end_labels, min_gap=0.055 * top):
-            ax.text(x_end + 0.05, y, text, va="center", fontsize=8.5, color=INK_2)
+                offset = (list(DIRECTION_STYLE).index(direction) - 1.5) * 0.012
+                mark(ax, value + offset, row, colour, marker,
+                     label=direction if not xs and axis_index == 0 else None)
+                xs.append(value + offset)
+                ys.append(row["k50"])
+            ax.plot(xs, ys, color=colour, linewidth=1.3, zorder=2)
+        span = (max(values) - min(values)) or 1.0
+        ax.set_xticks(values)
+        ax.set_xlim(min(values) - 0.1 * span, max(values) + 0.1 * span)
         ax.set_xlabel(labels[axis])
-        ax.set_xticks(COMMAND_STEPS[::2])
-        ax.set_xlim(COMMAND_STEPS[0] - 0.08, COMMAND_STEPS[-1] + 0.3)
-        ax.set_title(f"walking policy, {axis} sweep", loc="left", fontsize=10.5, color=INK)
-    axes[0].set_ylabel("first push not survived (N, held 0.2 s)")
+        ax.set_title(f"walking policy, {axis} commands", loc="left", fontsize=10.5, color=INK)
+    axes[0].set_ylabel("push survived half the time (m/s kick)")
+    axes[0].text(0.01, TRAINING_KICK["normal"] + 0.01 * top,
+                 f"walking training kick {TRAINING_KICK['normal']} m/s", fontsize=8.5, color=INK_2,
+                 transform=axes[0].get_yaxis_transform())
 
-    # zero command: walking vs safe, grouped by direction
     ax = axes[3]
-    width = 0.36
-    for i, (direction, (colour, marker)) in enumerate(DIRECTION_STYLE.items()):
-        for j, variant in enumerate(("normal", "safe")):
-            s = summary((variant, (0.0, 0.0, 0.0), direction))
-            if s is None:
-                continue
-            x = j + (i - 1.5) * width / 2
-            ax.vlines(x, 0, s[0], color=colour, linewidth=2, zorder=2)
-            if repeats > 1:
-                ax.vlines(x, s[1], s[2], color=colour, linewidth=1, zorder=2)
-            ax.plot(x, s[0], marker=marker, markersize=6, linestyle="none", zorder=3,
-                    markerfacecolor=SURFACE if s[4] else colour,
-                    markeredgecolor=colour if s[4] else SURFACE, markeredgewidth=1.4)
+    style(ax)
+    for j, variant in enumerate(("normal", "safe")):
+        ax.hlines(TRAINING_KICK[variant], j - 0.45, j + 0.45, **dashed)
+        for i, (direction, (colour, marker)) in enumerate(DIRECTION_STYLE.items()):
+            row = rows.get((variant, (0.0, 0.0, 0.0), direction))
+            if row is not None:
+                mark(ax, j + (i - 1.5) * 0.18, row, colour, marker)
     ax.set_xticks([0, 1])
     ax.set_xticklabels(["walking", "safe"])
     ax.set_xlim(-0.6, 1.6)
+    ax.set_ylim(0, top)
     ax.set_title("zero command", loc="left", fontsize=10.5, color=INK)
-    axes[0].text(0.01, training - 0.01 * top, f"training push {training:.0f} N", ha="left",
-                 va="top", fontsize=8.5, color=INK_2,
-                 transform=blended_transform_factory(axes[0].transAxes, axes[0].transData))
+    ax.secondary_yaxis("right", functions=force_of).set_ylabel(
+        f"as a force held {duration:.1f} s (N)", color=INK_2)
 
     handles, names = axes[0].get_legend_handles_labels()
     fig.legend(handles, [f"pushed {n}" for n in names], loc="upper right", ncol=4, frameon=False,
                fontsize=9, bbox_to_anchor=(0.995, 1.0))
-    fig.suptitle(f"{robot}: push recovery in Gazebo", x=0.01, ha="left", fontsize=12.5,
-                 color=INK)
-    spread = "median of %d runs, bar = min-max; " % repeats if repeats > 1 else "one run per point; "
-    note = (f"Push at the base origin in the base-frame direction shown, increasing by "
-            f"{FORCES[1] - FORCES[0]} N until the first failure ({spread}open marker = survived "
-            f"every push up to {ceiling} N). Dashed line: training push strength.")
+    fig.suptitle(f"{robot}: push recovery in Gazebo", x=0.01, ha="left", fontsize=12.5, color=INK)
+    note = (f"Each point: the kick (force x {duration:.1f} s / {mass:.1f} kg) survived half the time, "
+            f"from single pushes on a fresh start, with its 95 % interval; open marker = bound "
+            f"(never fell / always fell). {len(results)} runs, real-time factor >= "
+            f"{min(rtf):.2f}.\nDashed lines: largest training kick per axis, "
+            f"{TRAINING_KICK['normal']} m/s walking and {TRAINING_KICK['safe']} m/s safe.")
     if errors:
-        note += f"  {len(errors)} run(s) errored and are not drawn."
+        note += f"  {len(errors)} run(s) errored and are left out."
     fig.text(0.01, 0.01, note, fontsize=8.5, color=INK_2)
-    fig.tight_layout(rect=(0, 0.04, 1, 0.94))
-    png_path = os.path.join(out_dir, "push_sweep.png")
-    fig.savefig(png_path, dpi=150, facecolor=SURFACE)
-    print(f"push_sweep: wrote {png_path} and {csv_path}")
+    fig.tight_layout(rect=(0, 0.07, 1, 0.94))
+    sweep_png = os.path.join(out_dir, "push_sweep.png")
+    fig.savefig(sweep_png, dpi=150, facecolor=SURFACE)
+
+    # --- survival curves at zero command --------------------------------------------------------
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4.8))
+    fig.patch.set_facecolor(SURFACE)
+    zero = {k: r for k, r in rows.items() if not any(k[1])}
+    for ax, variant, title in zip(axes, ("normal", "safe"), ("walking policy", "safe policy")):
+        kmax = max([kick for k, r in zero.items() if k[0] == variant for kick, _, _ in r["points"]],
+                   default=1.0)
+        grid_k = np.linspace(0, kmax * 1.05, 400)
+        style(ax)
+        ax.axvline(TRAINING_KICK[variant], **dashed)
+        ax.text(TRAINING_KICK[variant], 1.04, f" training kick {TRAINING_KICK[variant]} m/s",
+                fontsize=8.5, color=INK_2, va="bottom")
+        for direction, (colour, marker) in DIRECTION_STYLE.items():
+            row = zero.get((variant, (0.0, 0.0, 0.0), direction))
+            if row is None:
+                continue
+            levels = sorted({k for k, _, _ in row["points"]})
+            rate = [np.mean([s for k, s, _ in row["points"] if k == level]) for level in levels]
+            count = [sum(1 for k, _, _ in row["points"] if k == level) for level in levels]
+            ax.scatter(levels, rate, s=[12 + 8 * c for c in count], color=colour, marker=marker,
+                       edgecolor=SURFACE, linewidth=0.8, zorder=3)
+            if not row["censored"]:
+                curve = 1.0 / (1.0 + np.exp(np.clip((grid_k - row["k50"]) / row["scale"], -50, 50)))
+                ax.plot(grid_k, curve, color=colour, linewidth=1.6, zorder=2,
+                        label=f"pushed {direction}: {row['k50']:.2f} m/s "
+                              f"[{row['low']:.2f}, {row['high']:.2f}]")
+        ax.set_xlim(0, kmax * 1.05)
+        ax.set_ylim(-0.03, 1.12)
+        ax.set_xlabel("push as a velocity kick (m/s)")
+        ax.set_title(title, loc="left", fontsize=10.5, color=INK)
+        ax.legend(loc="lower right", bbox_to_anchor=(1.0, 0.07), frameon=False, fontsize=8.5,
+                  title="50 % survival [95 % CI]", title_fontsize=8.5)
+        ax.secondary_xaxis("top", functions=force_of).set_xlabel(
+            f"force held {duration:.1f} s (N)", color=INK_2)
+    axes[0].set_ylabel("survived (fraction of runs)")
+    fig.suptitle(f"{robot}: survival of a single push at zero command, Gazebo", x=0.01, ha="left",
+                 fontsize=12.5, color=INK)
+    fig.text(0.01, 0.01, "Every point is one Gazebo run with one push; marker size = runs at that "
+             "level; curves: logistic fits.", fontsize=8.5, color=INK_2)
+    fig.tight_layout(rect=(0, 0.05, 1, 0.94))
+    survival_png = os.path.join(out_dir, "push_survival.png")
+    fig.savefig(survival_png, dpi=150, facecolor=SURFACE)
+    print(f"push_sweep: wrote {sweep_png}, {survival_png} and {csv_path}")
 
 
 # =================================================================================================
@@ -606,29 +748,34 @@ def parse_args(argv=None):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="mode", required=True)
 
-    trial = sub.add_parser("trial", help="one (variant, command, direction): runs Gazebo itself")
+    trial = sub.add_parser("trial", help="one push in one Gazebo run")
     trial.add_argument("--robot", default="aliengo")
     trial.add_argument("--variant", choices=("normal", "safe"), default="normal")
     trial.add_argument("--cmd", nargs=3, type=float, default=(0.0, 0.0, 0.0),
                        metavar=("VX", "VY", "WZ"))
     trial.add_argument("--direction", choices=sorted(DIRECTIONS), required=True)
-    trial.add_argument("--repeat", type=int, default=0, help="index, recorded in the result")
-    trial.add_argument("--max-force", type=int, default=FORCES[-1])
+    trial.add_argument("--force", type=float, required=True, help="N, held for push_duration")
+    trial.add_argument("--seed", type=int, default=0, help="seeds the moment of the push")
+    trial.add_argument("--repeat", type=int, default=0, help="run index, recorded in the result")
     trial.add_argument("--out", required=True, help="result file (json)")
 
-    sweep = sub.add_parser("sweep", help="the whole grid, resumable")
+    sweep = sub.add_parser("sweep", help="the adaptive sweep, resumable")
     sweep.add_argument("--robot", default="aliengo")
     sweep.add_argument("--out-dir", required=True)
-    sweep.add_argument("--repeats", type=int, default=1)
-    sweep.add_argument("--max-force", type=int, default=FORCES[-1])
+    sweep.add_argument("--variants", nargs="+", choices=("normal", "safe"), default=["normal", "safe"])
+    sweep.add_argument("--command-steps", nargs="*", type=float, default=[0.25, 0.5],
+                       help="|command| per axis for the walking policy, both signs (none: zero "
+                            "command only)")
+    sweep.add_argument("--coarse-runs", type=int, default=1)
+    sweep.add_argument("--fine-runs", type=int, default=3)
     sweep.add_argument("--docker", default=None, metavar="IMAGE",
                        help="run each trial in its own container of IMAGE (from the host)")
     sweep.add_argument("--lab-home", default="~/trento_lab_home",
                        help="host directory the image mounts at /root (default: %(default)s)")
     sweep.add_argument("--jobs", type=int, default=1, help="trials at a time (needs --docker)")
-    sweep.add_argument("--trial-timeout", type=float, default=1800.0, help="wall s per trial")
+    sweep.add_argument("--trial-timeout", type=float, default=900.0, help="wall s per trial")
 
-    plot = sub.add_parser("plot", help="figure and csv from a sweep's results")
+    plot = sub.add_parser("plot", help="fits, figures and csv from a sweep's results")
     plot.add_argument("out_dir")
     return parser.parse_args(argv)
 
