@@ -32,6 +32,8 @@ VELOCITY = "velocity"
 class RlVelocityController():
     def __init__(self, robot_name: str, dt: float, use_nn_se: bool = True, freq: int = 50,
                  debug=False, policy: str = LEGACY, estimate_velocity: bool = True):
+
+
         self.debug = debug
         # policy='velocity' only: evaluate the actor's state-estimation head and publish what it
         # regresses on /<robot>/se_nn_base_lin_vel.  It is a diagnostic - the policy consumes its
@@ -51,6 +53,7 @@ class RlVelocityController():
             self._initVelocityPolicy(dt, use_nn_se)
             return
 
+        # these are for the legacy policy with concurrent state estimation network and will be avoided if policy is velocity
         if use_nn_se:
             base_model_path = os.path.join(os.environ.get('LOCOSIM_DIR'),
                                            'robot_control',

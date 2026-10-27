@@ -50,10 +50,10 @@ if __name__ == '__main__':
     p = SafeRLController('aliengo')
     world_name = 'fast.world'
     use_gui=False#True
+
     p.state_estimation = 'ground_truth'  # 'odometry','imu', 'pronto', 'ground_truth' (only sim)
     # NOTE: in the RL controller, SE NN is used only if state estimation is not pronto
-    rl_use_nn_se = p.state_estimation != 'pronto'
-    rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=rl_use_nn_se, debug=False, policy="velocity")
+    rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=True, debug=False, policy="velocity")
     p.SAVE_BAG = False  #
     vf_frequency = 100  # Hz
     vf_decimation = (1 / p.dt) / (vf_frequency)
@@ -74,13 +74,13 @@ if __name__ == '__main__':
                           use_ground_truth_contacts=True,
                           additional_args=['gui:=' + str(use_gui),
                                            'go0_conf:=standDown',
-                                           'rviz:=false',
+                                           'rviz:=true',
                                            *(['task_period:=0.002'] if p.real_robot else [])])  # change task period for real robot
         if p.SAVE_BAG:
             p.recorder = RosbagControlledRecorder(topics='/aliengo/joint_states /aliengo/imu  /state_estimator_pronto/pose /state_estimator_pronto/twist /state_estimator_pronto/vel_raw /state_estimator_pronto/stance /value_function /qualisys/robot/pose /rl_ref_vel /tf /tf_static',
                                                   bag_name="saferl.bag", record_from_startup_=False)
             p.recorder.start_recording_srv()
-        #p.setSimSpeed(max_update_rate=300)
+
         p.startupProcedure()
         # if p.state_estimation=='pronto':
         #     launchFileNode("mocap_qualisys", "qualisys.launch")
@@ -92,10 +92,11 @@ if __name__ == '__main__':
         time_push = p.startTime
         #profiler = Profiler(function_name=vf.computeValueFnc)
         #to reduce simulation frequency
-        #p.setSimSpeed(dt_sim=0.001, max_update_rate=300, iters=1500)
+        p.setSimSpeed(dt_sim=0.001, max_update_rate=200)
 
 
         while not ros.is_shutdown():
+
             isrec_prev = isrec
             p.updateKinematics()
 
@@ -159,7 +160,7 @@ if __name__ == '__main__':
                 proj_gravity_b = p.b_R_w.dot(np.array([0, 0, -1]))
 
                 # pushes of increasing entity
-                if not p.real_robot and  (p.time > (p.startTime + 5.)) and time_push % 2. == 0 and sim_push and (isrec or allow_push_not_rec):
+                if not p.real_robot and  (p.time > (p.startTime + 5.)) and time_push % 4. == 0 and sim_push:# and (isrec or allow_push_not_rec):
                      p.applyForce(0, 50*p.counter, 0, 0, 0, 0, 0.25)
                      p.startPush = p.time
                      print(50*p.counter)
@@ -182,8 +183,8 @@ if __name__ == '__main__':
 
 
                 if step % vf_decimation == 0 and (p.time >(p.startTime + 5.)):# and isrec:
-                     isrec, V_safe = vf.computeValueFnc(body_ang_vel=ang_vel_b, proj_gravity=proj_gravity_b, joint_pos=p.q, joint_vel=p.qd, threshold=0.8, vf_additional_term = 0.0)
-                #     isrec = True
+                      isrec, V_safe = vf.computeValueFnc(body_ang_vel=ang_vel_b, proj_gravity=proj_gravity_b, joint_pos=p.q, joint_vel=p.qd, threshold=0.8, vf_additional_term = 0.0)
+                # #     isrec = True
                 #     #publish value function
                 #     msg = Float32()
                 #     msg.data = V_safe
