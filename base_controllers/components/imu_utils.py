@@ -28,7 +28,9 @@ class IMU_utils:
     def compute_lin_vel(self, W_lin_acc, loop_dt):
         if self.counter < self.timeout:
             self.baseLinTwistImuW[:] = 0.
-
+        # this is a dampled leaky integrator for velocity vdot = The damping term gradually pulls the velocity estimate toward zero;
+        # loop_dt * W_lin_acc : adds the velocity change caused by acceleration during this short time
+        # the velocity is slightly shrinked by a factor self.alpha_velocity[0] * loop_dt. That shrinkage is the damping, which can help prevent velocity from drifting indefinitely because of sensor bias or noise.
         self.baseLinTwistImuW[0] = (1 - self.alpha_velocity[0] * loop_dt) * self.baseLinTwistImuW[0] + loop_dt * W_lin_acc[0]
         self.baseLinTwistImuW[1] = (1 - self.alpha_velocity[1] * loop_dt) * self.baseLinTwistImuW[1] + loop_dt * W_lin_acc[1]
         self.baseLinTwistImuW[2] = (1 - self.alpha_velocity[2] * loop_dt) * self.baseLinTwistImuW[2] + loop_dt * W_lin_acc[2]

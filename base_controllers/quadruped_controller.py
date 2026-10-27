@@ -87,9 +87,8 @@ class QuadrupedController(BaseController):
                 #we start the pronto node only after startup!
                 self.pronto_config = "aliengo_state_estimator.yaml"
                 self.sub_pose = ros.Subscriber("/state_estimator_pronto/odom", Odometry,  callback=self._receive_pose, queue_size=1, tcp_nodelay=True)
-            elif self.state_estimation=='odometry':#use odometry
-                self.sub_imu_euler = ros.Subscriber("/" + self.robot_name + "/euler_imu", Vector3,  callback=self._receive_euler, queue_size=1, tcp_nodelay=True)
-                self.sub_pose = ros.Subscriber("/" + self.robot_name + "/ground_truth", Odometry,   callback=self._receive_pose_real, queue_size=1, tcp_nodelay=True)
+            elif self.state_estimation=='odometry':#use odometry: takes quaternion and ang vel from imu and gets lin vel computed from contacts in updateKinematics
+                self.sub_pose = ros.Subscriber("/" + self.robot_name + "/ground_truth", Odometry,   callback=self._receive_pose_odometry, queue_size=1, tcp_nodelay=True)
             elif self.state_estimation=='imu':#use angular velocity and quaternion coming from IMU (robot_name/imu topic) and write BasePose BaseTwist variables
                 self.sub_imu = ros.Subscriber("/" + self.robot_name + "/imu", Imu,  callback=self._receive_imu, queue_size=1, tcp_nodelay=True)
             elif self.state_estimation=='ground_truth':
@@ -112,7 +111,7 @@ class QuadrupedController(BaseController):
             elif self.state_estimation=='ground_truth':
                 self.sub_pose = ros.Subscriber("/" + self.robot_name + "/ground_truth", Odometry,  callback=self._receive_pose,  queue_size=1, tcp_nodelay=True)
             elif self.state_estimation=='odometry':
-                self.sub_pose = ros.Subscriber("/" + self.robot_name + "/ground_truth", Odometry, callback=self._receive_pose_real, queue_size=1, tcp_nodelay=True)
+                self.sub_pose = ros.Subscriber("/" + self.robot_name + "/ground_truth", Odometry, callback=self._receive_pose_odometry, queue_size=1, tcp_nodelay=True)
             elif self.state_estimation=='imu':
                 self.sub_imu = ros.Subscriber("/" + self.robot_name + "/trunk_imu", Imu,  callback=self._receive_imu, queue_size=1, tcp_nodelay=True)
             else:
@@ -150,10 +149,6 @@ class QuadrupedController(BaseController):
         # baseLinAccW is without gravity
         self.baseLinAccW = self.b_R_w.T @ (self.baseLinAccB - self.imu_utils.IMU_accelerometer_bias) - self.imu_utils.g0
 
-    def _receive_euler(self, msg):
-        self.euler[0] = msg.x
-        self.euler[1] = msg.y
-        self.euler[2] = msg.z
 
     def _receive_pronto_contacts(self, msg):
         self.pronto_contacts[0] = msg.lf
@@ -218,14 +213,15 @@ class QuadrupedController(BaseController):
         self.angVelB[2] = msg.angular_velocity.z
         self.baseTwistW[3:] = self.b_R_w.T.dot(self.angVelB)
 
-    def _receive_pose_real(self, msg):
+    def _receive_pose_odometry(self, msg):
+        # get from messages
         self.quaternion[0] = msg.pose.pose.orientation.x
         self.quaternion[1] = msg.pose.pose.orientation.y
         self.quaternion[2] = msg.pose.pose.orientation.z
         self.quaternion[3] = msg.pose.pose.orientation.w
-        if not self.real_robot:  # no /euler_imu in simulation: take the attitude from ground truth
-            self.euler = np.array(euler_from_quaternion(self.quaternion))
+        self.euler = np.array(euler_from_quaternion(self.quaternion))
 
+        # updated in updateKinematics
         self.basePoseW[self.u.sp_crd["LX"]] = self.basePoseW_legOdom[0]
         self.basePoseW[self.u.sp_crd["LY"]] = self.basePoseW_legOdom[1]
         self.basePoseW[self.u.sp_crd["LZ"]] = self.basePoseW_legOdom[2]
@@ -234,7 +230,8 @@ class QuadrupedController(BaseController):
         self.basePoseW[self.u.sp_crd["AY"]] = self.euler[1]
         self.basePoseW[self.u.sp_crd["AZ"]] = self.euler[2]
 
-        if False:#any(self.contact_state):
+        #needs at least a contact otherwise use IMU integration
+        if any(self.contact_state):
             self.baseTwistW[self.u.sp_crd["LX"]] = self.baseTwistW_legOdom[0]
             self.baseTwistW[self.u.sp_crd["LY"]] = self.baseTwistW_legOdom[1]
             self.baseTwistW[self.u.sp_crd["LZ"]] = self.baseTwistW_legOdom[2]
@@ -839,6 +836,7 @@ class QuadrupedController(BaseController):
                 self.qd += noise['qd'].draw()
             if 'tau' in noise:
                 self.tau += noise['tau'].draw()
+        # computes linear velocity baseTwistW_legOdom from odometry
         self.basePoseW_legOdom, self.baseTwistW_legOdom = self.leg_odom.base_in_world(contact_state=self.contact_state,
                                                                                       B_contacts=self.B_contacts,
                                                                                       b_R_w=self.b_R_w,
@@ -846,6 +844,7 @@ class QuadrupedController(BaseController):
                                                                                       ang_vel=self.u.angPart(self.baseTwistW),
                                                                                       qd=self.qd,
                                                                                       update_legOdom=update_legOdom)
+        # computes baseLinTwistImuW integrsating from Imu linear acceleration with leaky integrator
         self.imu_utils.compute_lin_vel(self.baseLinAccW, self.loop_time)
         super(QuadrupedController, self).updateKinematics()
 
@@ -1720,7 +1719,7 @@ if __name__ == '__main__':
     world_name = 'fast.world'
     use_gui = False
     p.state_estimation = 'odometry' # 'odometry','imu', 'pronto', 'ground_truth' (only sim), 'mocap'
-    rl_control = 'state_est_based' #'none', 'sensor_based' (Giulio), 'state_est_based' (Riccardo)
+    rl_control = 'sensor_based' #'none', 'sensor_based' (Giulio), 'state_est_based' (Riccardo)
     # NOTE: in the RL controller, SE NN is used only if state estimation is not pronto
     rl_use_nn_se = p.state_estimation != 'pronto'
     # Which policy family RlVelocityController runs: 'legacy' is the original set of networks under
