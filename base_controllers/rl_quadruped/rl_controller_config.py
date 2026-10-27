@@ -39,7 +39,7 @@ DEFAULTS = {
     "ip": None,                   # pinged before a --real run
     "network_interface": None,    # NIC the hardware interface binds to (Go2), None = driver default
     "body_mass": None,            # required, kg; sizes the default push
-    "q_fold": None,               # required, resting posture, keep the knees off the hard stop
+    "q_fold": None,               # required, crouch on the feet, the start of the stand-up
     "real_robot": False,          # set by get_config()
     "dt": 0.002,                  # control period, must divide the policy period (20 ms)
 
@@ -52,12 +52,13 @@ DEFAULTS = {
     "spawn_R": 0.0,
     "spawn_P": 0.0,
     "spawn_Y": 0.0,
-    # Where the description's go0 takes the start-up posture from: 'srdf' (the 'home' group state)
-    # or 'yaml' (<spawn_posture_name> in config/ros_impedance_controller.yaml).
+    # Where the description's go0 takes the start-up posture from: 'srdf' (a group state) or 'yaml'
+    # (a posture in config/ros_impedance_controller.yaml).  'lieDown' lies on the belly with the
+    # legs folded, as the real robot rests.
     "spawn_posture_source": None,  # required
-    "spawn_posture_name": "home",
+    "spawn_posture_name": "lieDown",
     "spawn_clearance": 0.002,     # m of air under the feet at spawn
-    "foot_radius": 0.0265,        # m, the foot frame is at the centre of the collision sphere
+    "foot_radius": 0.0265,        # m, foot sphere: its rolling sideways, spawn height fallback
 
     # --- gains (per robot) ------------------------------------------------------------------------
     # The policy runs on the kp/kd in its json.
@@ -69,9 +70,9 @@ DEFAULTS = {
 
     # --- timing, s -------------------------------------------------------------------------------
     "settle_duration": 1.0,       # hold the inherited posture before calibrating
-    "init_fold_duration": 3.0,
-    "stand_up_duration": 2.0,     # split over the two stand-up waypoints (fold, stand)
-    "stand_down_duration": 2.0,
+    "init_fold_duration": 3.0,    # lying posture -> q_fold
+    "stand_up_duration": 2.0,     # q_fold -> q_default
+    "stand_down_duration": 2.0,   # q_default -> q_fold
     "damping_ramp_duration": 0.6,  # feed-forward ramp-out
     "damping_settle_duration": 2.5,
 
@@ -122,13 +123,12 @@ ROBOTS = {
         "body_mass": 24.937,
         "foot_radius": 0.0265,
         "spawn_posture_source": "srdf",
-        "spawn_posture_name": "home",
-        # knee limit -2.775
-        "q_fold": _legs(0.2, 1.4, -2.70),
-        "kp_fold": _gains(20., 20., 20.),
-        "kd_fold": _gains(0.5, 0.5, 0.5),
-        "kp_stand": _gains(60., 60., 60.),
-        "kd_stand": _gains(1.0, 1.0, 1.0),
+        # hfe = -kfe / 2 as in q_default; haa is replaced by the stance; knee limit -2.775
+        "q_fold": _legs(0.0, 1.25, -2.5),
+        "kp_fold": _gains(35., 35., 35.),
+        "kd_fold": _gains(1.5, 1.5, 1.5),
+        "kp_stand": _gains(50., 50., 50.),
+        "kd_stand": _gains(2.0, 2.0, 2.0),
         "kd_damping": _gains(1.0, 1.0, 1.0),
         "max_roll_pitch": 1.5,
         "max_joint_vel": 50.0,    # ~3x the fastest joint while walking
@@ -141,13 +141,12 @@ ROBOTS = {
         "body_mass": 16.088,
         "foot_radius": 0.022,
         "spawn_posture_source": "yaml",
-        "spawn_posture_name": "standDown",
-        # knee limit -2.7227
-        "q_fold": _legs(0.2, 1.4, -2.50),
-        "kp_fold": _gains(20., 20., 20.),
-        "kd_fold": _gains(0.5, 0.5, 0.5),
-        "kp_stand": _gains(50., 50., 50.),
-        "kd_stand": _gains(0.5, 0.5, 0.5),
+        # hfe = -kfe / 2 as in q_default; haa is replaced by the stance; knee limit -2.7227
+        "q_fold": _legs(0.0, 1.25, -2.5),
+        "kp_fold": _gains(25., 25., 25.),
+        "kd_fold": _gains(1.0, 1.0, 1.0),
+        "kp_stand": _gains(40., 40., 40.),
+        "kd_stand": _gains(1.5, 1.5, 1.5),
         "kd_damping": _gains(1.0, 1.0, 1.0),
         "max_roll_pitch": 1.5,
         "max_joint_vel": 60.0,    # ~3x the fastest joint while walking

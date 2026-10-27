@@ -100,8 +100,8 @@ any state ──[emergency]──▶ DAMPING ──▶ DONE
 |---|---|---|
 | `INIT` | fold | hold the measured posture for `settle_duration` |
 | `CALIBRATE` | fold | accelerometer bias, see below |
-| `FOLD` | fold | quintic move to `q_fold`, then hold it and wait for a stand-up |
-| `STAND_UP` | stand | quintic through `q_fold` to the policy's `q_default` |
+| `FOLD` | fold | quintic from the lying posture to the crouch `q_fold`, haa keeping the stance; then hold it and wait for a stand-up |
+| `STAND_UP` | stand | quintic from `q_fold` to the policy's `q_default` |
 | `STANDING` | stand | hold `q_default`, safety checks on |
 | `RL` | policy | walking policy on the operator command |
 | `SAFE_STOP` | policy | `safe` variant at zero command |
@@ -115,6 +115,20 @@ continuous stillness (gyro and joint-rate thresholds), averages `calibration_dur
 over on any motion. The bias is rejected if implausible (> 2 m/s^2), redone if the samples spread,
 and kept with a warning if `|acc - bias| - |g|` is large. After `calib_wait_timeout` s without
 stillness it goes on with a zero bias. `c` / Y re-runs it from the fold.
+
+**Getting up.** The robot starts on its belly with the legs folded and splayed, feet just off the
+ground, as the real robot rests (Gazebo spawns it in the description's `lieDown` posture, at the
+height of its lowest collision point). It calibrates there with no feed-forward: the belly carries
+the weight and nothing pushes on the ground. The fold lifts the body into `q_fold` (hfe = -kfe / 2
+as in `q_default`) while a feed-forward of the robot's weight (gravity of the posture, minimum-norm
+foot forces) ramps in, kept through `STAND_UP`, `STANDING` and `STAND_DOWN`; the PD only corrects,
+so moderate gains (kp 25-50) reach the targets. Off the belly the feet carry the weight before they
+are under the hips, and friction holds them where they land: dragging them in would take 40-60 % of
+the haa limit. So from the fold on, haa keeps each foot at the lateral position it had lying (the
+stance, counting the foot sphere rolling as the leg tilts) while hfe and kfe follow `q_fold` and
+`q_default`. The robot stands with haa about 0.15 rad wider than `q_default` (Go2 0.13-0.17,
+Aliengo 0.17-0.18), the rest within 0.03 rad, and the policy narrows the stance as it walks.
+`STAND_DOWN` measures the stance again.
 
 **Policy states.** Entering `RL` or `SAFE_STOP` from a non-policy state seeds the observation history
 from the current measurement (as an Isaac Lab reset). Switching between the two keeps the history,
@@ -174,9 +188,9 @@ ones, and hands the result to `BaseController` as its `robot_params`. Per robot:
 |---|---|
 | `joint_names`, `ee_frames` | in the policy's joint order |
 | `ip`, `network_interface` | real robot |
-| `body_mass`, `foot_radius` | default push, spawn height |
-| `spawn_posture_source`, `spawn_posture_name` | where `go0` takes the start-up posture: `srdf` (`home`, Aliengo) or `yaml` (`standDown` from `ros_impedance_controller.yaml`, Go2). The spawn height is computed from it so the robot does not drop at start-up |
-| `q_fold` | resting posture, keep the knees off the hard stop |
+| `body_mass`, `foot_radius` | default push; the foot sphere rolling in the stance |
+| `spawn_posture_source`, `spawn_posture_name` | where `go0` takes the start-up posture: `srdf` (a group state, Aliengo) or `yaml` (a posture in `ros_impedance_controller.yaml`, Go2), `lieDown` for both. The spawn height is computed from it (lowest collision point) so the robot does not drop at start-up |
+| `q_fold` | crouch on the feet, start of the stand-up; haa is replaced by the stance |
 | `kp_fold`, `kd_fold`, `kp_stand`, `kd_stand`, `kd_damping` | per-joint gains, the same in Gazebo and on the robot |
 | `max_roll_pitch`, `max_joint_vel` | safety limits |
 

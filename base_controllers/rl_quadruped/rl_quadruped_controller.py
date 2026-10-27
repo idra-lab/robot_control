@@ -13,9 +13,12 @@ from the floor to walking and back::
     any state ──[emergency]──▶ DAMPING ──▶ DONE
 
 * INIT holds the measured posture, then CALIBRATE estimates the accelerometer bias while the robot
-  lies still.
-* FOLD eases into ``q_fold`` and waits there for a stand-up.
-* STAND_UP / STAND_DOWN follow quintic waypoints.
+  lies still on its belly, legs folded.
+* FOLD lifts the body into ``q_fold``, a crouch, and waits there.  From here on haa keeps the feet
+  at the lateral position they lay with (the stance), so they are not dragged sideways.
+* STAND_UP / STAND_DOWN rise straight to the policy's default posture and back, with quintic timing.
+  From the fold on, a feed-forward torque carries the robot's weight, so moderate gains reach the
+  default posture instead of sagging below it.
 * RL runs the walking policy at 50 Hz on the 500 Hz loop; SAFE_STOP runs the ``safe`` variant
   (trained at zero command) on the same observation history, so the hand-over works mid-stride.
 * DAMPING (kp = 0) lets the robot sink under its own weight, from any state.
@@ -103,6 +106,21 @@ def quintic(alpha):
     return s, sd
 
 
+def lowest_point(shape, placement):
+    """Height of the lowest point of a collision primitive (hpp-fcl) at ``placement``; meshes
+    count by their origin."""
+    kind, rotation, centre = type(shape).__name__, placement.rotation, placement.translation
+    if kind == "Sphere":
+        return centre[2] - shape.radius
+    if kind == "Box":
+        return centre[2] - np.abs(rotation[2]) @ shape.halfSide
+    if kind in ("Cylinder", "Capsule"):
+        tilt = abs(rotation[2, 2])
+        rim = shape.radius if kind == "Capsule" else shape.radius * np.sqrt(max(0.0, 1.0 - tilt**2))
+        return centre[2] - shape.halfLength * tilt - rim
+    return centre[2]
+
+
 class RlQuadrupedController(BaseController):
 
     def __init__(self, robot_name="aliengo", input_device="keyboard", real_robot=False,
@@ -172,7 +190,7 @@ class RlQuadrupedController(BaseController):
             args.append("task_period:=" + str(self.dt))
             if self.network_interface:
                 args.append("network_interface:=" + self.network_interface)
-        elif self.cfg["spawn_posture_source"] == "yaml":
+        else:
             args.append("go0_conf:=" + self.cfg["spawn_posture_name"])
         args.extend(additional_args or [])
         self.startSimulator(world_name=None if self.real_robot else
@@ -282,13 +300,19 @@ class RlQuadrupedController(BaseController):
         self.imu_utils = IMU_utils(timeout=int(round(self.cfg["calibration_duration"] / self.dt)),
                                    dt=self.dt)
 
+        # The fold and stand postures take haa from the stance (_keepStance) once it is measured.
+        self._haa = [i for i, name in enumerate(self.joint_names) if name.endswith("haa_joint")]
+        self._haa_joints = [self.robot.model.getJointId(self.joint_names[i]) for i in self._haa]
+        self._feet = [self.robot.model.getFrameId(frame) for frame in self.cfg["ee_frames"]]
+        self.stance_y = None
+        self.stance_haa = None
         self.q_fold = np.asarray(self.cfg["q_fold"], dtype=np.float64)
         self.q_stand = self.policy.q_default.copy()
-        self.stand_up_waypoints = [self.q_fold, self.q_stand]
-        self.stand_down_waypoints = [self.q_fold]
+        self.tau_fold = self._standingTorques(self.q_fold)
+        self.tau_stand = self._standingTorques(self.q_stand)
         self._traj_from = np.zeros(na)
         self._traj_to = np.zeros(na)
-        self._traj_index = 0
+        self._traj_load = (0.0, 0.0)
 
         self._got_jstate = False
         self._got_imu = False
@@ -349,8 +373,9 @@ class RlQuadrupedController(BaseController):
         return True
 
     def _fixSpawnHeight(self):
-        """Set spawn_z so the feet start on the ground in the start-up posture: a drop onto the
-        floor makes the robot ring and spoils the IMU calibration."""
+        """Set spawn_z so the robot starts on the ground in the start-up posture, on whatever
+        touches it first (the belly when lying): a drop onto the floor makes the robot ring and
+        spoils the IMU calibration."""
         try:
             posture = self._startupPosture()
         except (OSError, KeyError, ValueError, TypeError, ElementTree.ParseError, yaml.YAMLError,
@@ -362,9 +387,15 @@ class RlQuadrupedController(BaseController):
         robot = getRobotModelFloating(self.robot_name)
         pin.framesForwardKinematics(robot.model, robot.data,
                                     np.hstack([pin.neutral(robot.model)[:7], posture]))
-        feet_z = [robot.data.oMf[robot.model.getFrameId(frame)].translation[2]
-                  for frame in self.cfg["ee_frames"]]
-        height = -float(np.mean(feet_z)) + self.cfg["foot_radius"] + self.cfg["spawn_clearance"]
+        if robot.collision_model.ngeoms:
+            pin.updateGeometryPlacements(robot.model, robot.data, robot.collision_model,
+                                         robot.collision_data)
+            bottom = min(lowest_point(obj.geometry, placement) for obj, placement in
+                         zip(robot.collision_model.geometryObjects, robot.collision_data.oMg))
+        else:
+            bottom = min(robot.data.oMf[robot.model.getFrameId(frame)].translation[2]
+                         for frame in self.cfg["ee_frames"]) - self.cfg["foot_radius"]
+        height = -float(bottom) + self.cfg["spawn_clearance"]
         conf.robot_params[self.robot_name]["spawn_z"] = height
         self.base_offset[2] = height
         print(colored(f"Spawn height {height:.3f} m for the {self.cfg['spawn_posture_source']} "
@@ -575,19 +606,74 @@ class RlQuadrupedController(BaseController):
         return self.time - self.state_start_time
 
     def _setGains(self, kp, kd):
-        """Push the joint gains (ki = 0), skipping the /set_pids call if they did not change."""
+        """Push the joint gains (ki = 0), skipping the /set_pids call if they did not change.
+        The gains go through a service and the target through a topic, so the joint PD can pair
+        the new gains with the old target for a tick (e.g. stiff gains on the policy's offset
+        target).  An error-free target that feeds forward the torque the joints get now bridges
+        the switch whichever arrives first."""
         kp = np.asarray(kp, dtype=np.float64)
         kd = np.asarray(kd, dtype=np.float64)
         if self._active_gains is not None and np.array_equal(self._active_gains[0], kp) \
                 and np.array_equal(self._active_gains[1], kd):
             return
+        self.send_des_jstate(self.q, np.zeros(self.robot.na), self.tau_fb + self.tau_ffwd)
         self.pid.setPDjoints(kp, kd, np.zeros(self.robot.na))
         self._active_gains = (kp.copy(), kd.copy())
 
-    def _hold(self, q):
+    def _hold(self, q, tau_ffwd=0.0):
         self.q_des[:] = q
         self.qd_des[:] = 0.0
-        self.tau_ffwd[:] = 0.0
+        self.tau_ffwd[:] = tau_ffwd
+
+    def _standingTorques(self, q):
+        """Joint torques that carry the robot's weight on its four feet in posture ``q``, base
+        level: static balance g(q) = S^T tau + J^T f, with the minimum-norm foot forces f."""
+        model, data = self.robot.model, self.robot.data
+        q_full = np.hstack([pin.neutral(model)[:7], q])
+        pin.computeJointJacobians(model, data, q_full)
+        pin.updateFramePlacements(model, data)
+        gravity = pin.computeGeneralizedGravity(model, data, q_full)
+        jac = np.vstack([pin.getFrameJacobian(model, data, model.getFrameId(frame),
+                                              pin.LOCAL_WORLD_ALIGNED)[:3]
+                         for frame in self.cfg["ee_frames"]])
+        forces = np.linalg.lstsq(jac[:, :6].T, gravity[:6], rcond=None)[0]
+        return gravity[6:] - jac[:, 6:].T @ forces
+
+    def _measureStance(self):
+        """Record the feet's lateral position in the base frame and fit the fold and stand
+        postures to it, so no later move drags the feet sideways against friction."""
+        model, data = self.robot.model, self.robot.data
+        pin.framesForwardKinematics(model, data, np.hstack([pin.neutral(model)[:7], self.q]))
+        self.stance_y = np.array([data.oMf[foot].translation[1] for foot in self._feet])
+        self.stance_haa = self.q[self._haa].copy()
+        self.q_fold = self._keepStance(np.asarray(self.cfg["q_fold"], dtype=np.float64))
+        self.q_stand = self._keepStance(self.policy.q_default)
+        self.tau_fold = self._standingTorques(self.q_fold)
+        self.tau_stand = self._standingTorques(self.q_stand)
+
+    def _keepStance(self, q):
+        """``q`` with each haa set so its foot keeps the stance.  With haa at zero the foot is at
+        p in the haa frame (axis x); haa = theta puts it at p_y cos(theta) - p_z sin(theta), the
+        solution nearer the given haa.  Tilting the leg rolls the foot sphere, which moves its
+        centre by -radius * (theta - stance_haa) without slipping: a few Newton steps add that."""
+        model, data, radius = self.robot.model, self.robot.data, self.cfg["foot_radius"]
+        q = np.array(q, dtype=np.float64)
+        flat = q.copy()
+        flat[self._haa] = 0.0
+        pin.framesForwardKinematics(model, data, np.hstack([pin.neutral(model)[:7], flat]))
+        for leg, (i, joint, foot) in enumerate(zip(self._haa, self._haa_joints, self._feet)):
+            hip = data.oMi[joint]
+            p = hip.actInv(data.oMf[foot].translation)
+            reach, phase = np.hypot(p[1], p[2]), np.arctan2(p[2], p[1])
+            lateral = (self.stance_y[leg] - hip.translation[1]) / reach
+            spread = np.arccos(np.clip(lateral, -1.0, 1.0))
+            haa = min((spread - phase, -spread - phase), key=lambda theta: abs(theta - q[i]))
+            for _ in range(3):
+                error = (reach * np.cos(haa + phase) + hip.translation[1] - self.stance_y[leg]
+                         + radius * (haa - self.stance_haa[leg]))
+                haa -= error / (radius - reach * np.sin(haa + phase))
+            q[i] = haa
+        return q
 
     def handleEvents(self):
         for event in self.command.poll():
@@ -657,8 +743,11 @@ class RlQuadrupedController(BaseController):
             print(colored(f"Calibrating the accelerometer bias: keep the robot still for "
                           f"{self.cfg['calib_stable_window']:.1f} + "
                           f"{self.cfg['calibration_duration']:.1f} s", "cyan"))
-            # Re-triggered from the fold, keep the fold target instead of the sagged measurement.
-            self._hold(self.q_fold if self._folded else self.q)
+            # Re-triggered from the fold, keep holding it.
+            if self._folded:
+                self._hold(self.q_fold, self.tau_fold)
+            else:
+                self._hold(self.q)
             self.imu_utils.IMU_accelerometer_bias[:] = 0.0
             self._calibReset(announce=False)
 
@@ -699,10 +788,14 @@ class RlQuadrupedController(BaseController):
                           f"IMU reports specific force (+9.81 on z when level)", "red"))
             self.imu_utils.IMU_accelerometer_bias[:] = 0.0
         elif np.max(spread) > self.cfg["calib_max_spread"]:
-            print(colored(f"Sample spread {np.round(spread, 3)} m/s^2 is too large: the robot was "
-                          f"not still. Retrying.", "yellow"))
-            self._calibReset(announce=False)
-            return
+            if self.state_elapsed < self.cfg["calib_wait_timeout"]:
+                print(colored(f"Sample spread {np.round(spread, 3)} m/s^2 is too large: the robot "
+                              f"was not still. Retrying.", "yellow"))
+                self._calibReset(announce=False)
+                return
+            print(colored(f"Sample spread {np.round(spread, 3)} m/s^2 still too large after "
+                          f"{self.cfg['calib_wait_timeout']:.0f} s: no calibration, the bias stays "
+                          f"zero. Re-trigger it from the fold with 'c' / Y.", "red"))
         else:
             self.imu_utils.IMU_accelerometer_bias[:] = bias
             self._calibrated = True
@@ -728,12 +821,14 @@ class RlQuadrupedController(BaseController):
         self._calib_warned = -1e9
 
     def _fold(self):
-        """Ease into q_fold on the soft gains (unless already there), then hold it."""
+        """From lying on the belly, lift the body into q_fold on the fold gains while the weight
+        feed-forward ramps in, the feet keeping the stance they lay with; then hold it."""
         if self.state_first_tick:
             self._setGains(self.cfg["kp_fold"], self.cfg["kd_fold"])
             self._fold_moving = not self._folded
             if self._fold_moving:
-                self._startTrajectory([self.q_fold], self.cfg["init_fold_duration"])
+                self._measureStance()
+                self._startTrajectory(self.q_fold, self.cfg["init_fold_duration"], load=(0.0, 1.0))
                 print(colored(f"Folding to {np.round(self.q_fold, 3)}", "cyan"))
             else:
                 print(colored("Folded. Command a stand up when the robot is clear.", "cyan"))
@@ -743,33 +838,33 @@ class RlQuadrupedController(BaseController):
                 self._folded = True
                 print(colored("Folded. Command a stand up when the robot is clear.", "cyan"))
             return
-        self._hold(self.q_fold)
+        self._hold(self.q_fold, self.tau_fold)
 
-    def _startTrajectory(self, waypoints, duration):
-        self._traj_waypoints = waypoints
-        self._traj_index = 0
-        self._traj_duration = duration / len(waypoints)
+    def _startTrajectory(self, target, duration, load):
+        """Quintic move from the measured posture to ``target``; ``load`` (start, end) scales the
+        weight feed-forward along it."""
         self._traj_from[:] = self.q
-        self._traj_to[:] = waypoints[0]
-        self._traj_leg_start = self.time
+        self._traj_to[:] = target
+        self._traj_duration = duration
+        self._traj_load = load
+        self._traj_start = self.time
 
     def _stepTrajectory(self):
-        """Quintic interpolation through the waypoints; True once the last one is reached."""
-        alpha = (self.time - self._traj_leg_start) / self._traj_duration
+        """Advance the move, haa following the stance; True once the target is reached."""
+        alpha = (self.time - self._traj_start) / self._traj_duration
         s, sd = quintic(alpha)
         delta = self._traj_to - self._traj_from
-        self.q_des[:] = self._traj_from + s * delta
-        self.qd_des[:] = delta * sd / self._traj_duration
-        self.tau_ffwd[:] = 0.0
-        if alpha >= 1.0:
-            self._traj_index += 1
-            if self._traj_index >= len(self._traj_waypoints):
-                self.qd_des[:] = 0.0
-                return True
-            self._traj_from[:] = self._traj_to
-            self._traj_to[:] = self._traj_waypoints[self._traj_index]
-            self._traj_leg_start = self.time
-        return False
+        q_des = self._traj_from + s * delta
+        qd_des = np.zeros_like(delta) if alpha >= 1.0 else delta * sd / self._traj_duration
+        if self.stance_y is not None:
+            ahead = self._keepStance(q_des + qd_des * self.dt)
+            q_des = self._keepStance(q_des)
+            qd_des[self._haa] = (ahead - q_des)[self._haa] / self.dt
+        self.q_des[:] = q_des
+        self.qd_des[:] = qd_des
+        load = self._traj_load[0] + s * (self._traj_load[1] - self._traj_load[0])
+        self.tau_ffwd[:] = load * self._standingTorques(self.q_des) if load > 0.0 else 0.0
+        return alpha >= 1.0
 
     def _stand_up(self):
         if self.state_first_tick:
@@ -777,14 +872,14 @@ class RlQuadrupedController(BaseController):
             if not self._calibrated:
                 print(colored("Standing up without a calibrated accelerometer", "yellow"))
             self._setGains(self.cfg["kp_stand"], self.cfg["kd_stand"])
-            self._startTrajectory(self.stand_up_waypoints, self.cfg["stand_up_duration"])
+            self._startTrajectory(self.q_stand, self.cfg["stand_up_duration"], load=(1.0, 1.0))
             print(colored(f"Standing up to {np.round(self.q_stand, 3)}", "cyan"))
         if self._stepTrajectory():
             self.transition(State.STANDING)
 
     def _standing(self):
         if self.state_first_tick:
-            self._hold(self.q_stand)
+            self._hold(self.q_stand, self.tau_stand)
             print(colored("Standing. Command the RL policy to start walking.", "cyan"))
         if self._checkSafety():
             self.transition(State.DAMPING)
@@ -841,7 +936,8 @@ class RlQuadrupedController(BaseController):
     def _stand_down(self):
         if self.state_first_tick:
             self._setGains(self.cfg["kp_stand"], self.cfg["kd_stand"])
-            self._startTrajectory(self.stand_down_waypoints, self.cfg["stand_down_duration"])
+            self._measureStance()
+            self._startTrajectory(self.q_fold, self.cfg["stand_down_duration"], load=(1.0, 1.0))
             print(colored("Standing down", "cyan"))
         if self._stepTrajectory():
             self._folded = True
