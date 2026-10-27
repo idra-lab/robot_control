@@ -59,15 +59,16 @@ if __name__ == '__main__':
     world_name = 'fast.world'
     use_gui=False
     p.state_estimation = 'ground_truth'  # 'odometry','imu', 'pronto', 'ground_truth' (only sim)
-    rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=False)
+    rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=True,debug=False, policy="velocity")
 
     try:
         p.startController(world_name=world_name,
                           use_ground_truth_contacts=True,
-                          additional_args=['gui:=' + str(use_gui),'rviz:=false'])
+                          additional_args=['gui:=' + str(use_gui),'rviz:=true'])
 
         p.pid = PidManager(p.joint_names)
         p.pid.setPDjoints(rl_controller.kp, rl_controller.kd, np.full(12, 0))
+        p.setSimSpeed(dt_sim=0.001, max_update_rate=200)
         p.dm.run_batch_simulations(rl_controller, n_episodes=100, save_path="components/safe_rl/value_function/observation_datasets", noise_std=10.0, seed = int(time.time()))
 
     except (ros.ROSInterruptException, ros.service.ServiceException):
