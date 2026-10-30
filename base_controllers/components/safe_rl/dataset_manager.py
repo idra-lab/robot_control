@@ -13,6 +13,7 @@ class DatasetManager():
         self.INCLINATION_THRESHOLD = 30.0  # degrees - max allowed inclination before considering robot as fallen
         self.FALL_HEIGHT_THRESHOLD = 0.2  # meters - min allowed height before considering robot as fallen
         self.CP_SAFE_RADIUS = 0.05  # meters - acceptable radius to consider CP successful
+        self.CAPTURE_HOLD = 0.2  # s the capture point has to stay in that radius
         self.G = 9.81  # gravitational constant
         self.policy_frequency = 50  # Hz
         self.decimation = (1 / self.quadruped.dt) * (1 / self.policy_frequency)
@@ -34,6 +35,13 @@ class DatasetManager():
         self.push_window = (2.0, 3.0)
         self.kick_range = (0.0, 3.0)
         self.push_duration = 0.2
+        # The episode ends at a fall, at capture (capture point within CP_SAFE_RADIUS for
+        # CAPTURE_HOLD s, from the end of the push) or with the push survived for post_push_time s
+        # after its end.
+        self.post_push_time = 3.0
+        # None: the walking policy throughout.  Else the safe policy takes over, at zero command,
+        # backup_delay s after the push starts.
+        self.backup_delay = None
 
     # -------------------------------
     # Capture Point Computation
@@ -66,14 +74,24 @@ class DatasetManager():
         cp = self.compute_capture_point(base_pos_xy, base_vel_xy, z_after)
         cp_local = cp - base_pos_xy
 
-        # when self.capture_flag = 1 it means we are stable
+        # when self.capture_flag = 1 it means we are stable: the capture point within CP_SAFE_RADIUS
+        # for CAPTURE_HOLD s.  A single tick inside is not enough, the base can be momentarily still
+        # while the robot tips over its feet.
         if np.linalg.norm(
-                cp_local) < self.CP_SAFE_RADIUS and self.quadruped.time >= self.warmup_time and self.fallen_flag == 0:
-            self.capture_flag = 1
+                cp_local) < self.CP_SAFE_RADIUS and self.quadruped.time >= self.capture_from and self.fallen_flag == 0:
+            if self.cp_inside_since is None:
+                self.cp_inside_since = self.quadruped.time
+            if self.quadruped.time - self.cp_inside_since >= self.CAPTURE_HOLD - 1e-6:
+                self.capture_flag = 1
+        else:
+            self.cp_inside_since = None
+        # survived the push
+        if self.quadruped.time >= self.end_time - 1e-6 and self.fallen_flag == 0 and self.capture_flag == 0:
+            self.survived_flag = 1
 
         self.quadruped.ros_pub.add_marker(np.append(base_pos_xy, 0.), radius=0.1, color="blue")
         self.quadruped.ros_pub.add_marker(np.append(cp, 0.), radius=0.1, color="red")
-        return self.capture_flag or self.fallen_flag
+        return self.capture_flag or self.survived_flag or self.fallen_flag
 
     def store_observations(self):
         # -------------------------------
@@ -89,10 +107,11 @@ class DatasetManager():
                 self.quadruped.q.astype(np.float32),
                 self.quadruped.qd.astype(np.float32)
             ))
-            # dimension of full_obs vector = 30+30+1+1=62
-            full_obs = np.concatenate([self.obs_t_, self.obs_tp1_, [float(self.fallen_flag), float(self.capture_flag)]])
-            # print('store',self.capture_flag)
-            # collect data only for backup policy which is active after warmup (the = ensures at least one sample is collected before break)
+            # dimension of full_obs vector = 30+30+1+1=62; the last is success: captured, or the
+            # push survived for post_push_time
+            success = float(self.capture_flag or self.survived_flag)
+            full_obs = np.concatenate([self.obs_t_, self.obs_tp1_, [float(self.fallen_flag), success]])
+            # collect data from the push on (the = ensures at least one sample is collected before break)
             if self.quadruped.time >= self.warmup_time:
                 self.observations.append(full_obs)
 
@@ -134,88 +153,88 @@ class DatasetManager():
     # -------------------------------
     # Main Function: Single Simulation Episode
     # -------------------------------
-    def run_single_simulation(self, actor_network, max_steps=8000, noise_std=1.0):
+    def run_single_simulation(self, actor_network, noise_std=1.0):
+        robot = self.quadruped
         # init vars
         self.fallen_flag = 0
         self.capture_flag = 0
-        self.first_time = True
+        self.survived_flag = 0
+        self.cp_inside_since = None
         self.observations = []
         self.obs_t_ = []
         self.obs_tp1_ = []
 
         actor_network.velocity_cmd = self.sample_command()
         # the push, on the control tick grid
-        push_step = int(round(np.random.uniform(*self.push_window) / self.quadruped.dt))
-        push_time = round(push_step * self.quadruped.dt, 4)
+        push_step = int(round(np.random.uniform(*self.push_window) / robot.dt))
+        push_time = round(push_step * robot.dt, 4)
         kick = np.random.uniform(*self.kick_range)
         kick_dir = np.random.uniform(-np.pi, np.pi)  # base frame, 0 forward, pi/2 left
         # samples are recorded from the push on
         self.warmup_time = push_time
+        self.capture_from = push_time + self.push_duration
+        self.end_time = self.capture_from + self.post_push_time
+        backup_time = np.inf if self.backup_delay is None else push_time + self.backup_delay
         print(f"Nominal policy velocity command {actor_network.velocity_cmd}, push at {push_time} s, "
               f"kick {kick:.2f} m/s at {np.degrees(kick_dir):.0f} deg")
 
+        max_steps = int(round(self.end_time / robot.dt)) + 2 * int(self.decimation)
         for self.step in range(max_steps):
-            self.quadruped.updateKinematics()
+            robot.updateKinematics()
             terminate = self.check_termination()
+            if self.fallen_flag and self.step < push_step:
+                print(colored(f"Fallen at {robot.time} s, before the push", "red"))
+                break
             self.store_observations()
-            if self.quadruped.time > self.warmup_time:
-                # Stop if CP was reached successfully
-                if terminate and self.step % self.decimation == 0:
-                    # print('terminate', self.capture_flag)
-                    print(f"Termination at {self.quadruped.time}")
-                    break
+            # Stop at a fall, capture or survival, on a sample so that it carries the label
+            if robot.time >= self.warmup_time and terminate and self.step % self.decimation == 0:
+                print(f"Termination at {robot.time}")
+                break
 
             if self.step == push_step:
-                yaw = self.quadruped.basePoseW[5]
-                force = self.quadruped.robot.robotMass * kick / self.push_duration
-                self.quadruped.push(force * np.array([np.cos(yaw + kick_dir), np.sin(yaw + kick_dir)]),
-                                    self.push_duration)
+                yaw = robot.basePoseW[5]
+                force = robot.robot.robotMass * kick / self.push_duration
+                robot.push(force * np.array([np.cos(yaw + kick_dir), np.sin(yaw + kick_dir)]), self.push_duration)
                 print(f"Pushing robot at {push_time} s: {force:.0f} N for {self.push_duration} s")
+
             # -------------------------------
             # Observation and Action Computation
             # -------------------------------
-            # Prepare observation
-            lin_acc_b = self.quadruped.baseLinAccB
-            lin_vel_b = self.quadruped.b_R_w.dot(self.quadruped.baseTwistW[:3])
-            ang_vel_b = self.quadruped.b_R_w.dot(self.quadruped.baseTwistW[3:6])
-            proj_gravity = self.quadruped.b_R_w.dot(np.array([0, 0, -1]))
+            lin_acc_b = robot.baseLinAccB
+            lin_vel_b = robot.b_R_w.dot(robot.baseTwistW[:3])
+            ang_vel_b = robot.b_R_w.dot(robot.baseTwistW[3:6])
+            proj_gravity = robot.b_R_w.dot(np.array([0, 0, -1]))
 
-            # Inference (get new action)
-            # Generate random initial command (velocity and yaw) to explore nominal policy states
-            if True:#self.quadruped.time <= warmup_time:  # nominal policy
-                if np.mod(self.quadruped.time, 0.5) == 0:
-                    print(colored(f"TIME: {self.quadruped.time}", "blue"))
-
-                self.quadruped.q_des = actor_network.action(lin_acc_b, lin_vel_b, ang_vel_b, proj_gravity,
-                                                            self.quadruped.q, self.quadruped.qd, policy_type="default")
-
+            if robot.time < backup_time:  # nominal policy
+                if np.mod(robot.time, 0.5) == 0:
+                    print(colored(f"TIME: {robot.time}", "blue"))
+                robot.q_des = actor_network.action(lin_acc_b, lin_vel_b, ang_vel_b, proj_gravity,
+                                                   robot.q, robot.qd, policy_type="default")
             else:  # switch to backup policy
-                if np.mod(self.quadruped.time, 0.5) == 0:
-                    print(colored(f"TIME: {self.quadruped.time}", "red"))
+                if np.mod(robot.time, 0.5) == 0:
+                    print(colored(f"TIME: {robot.time}", "red"))
                 actor_network.velocity_cmd = np.array([0.0, 0.0, 0.0])
-                self.quadruped.q_des = actor_network.action(lin_acc_b, lin_vel_b, ang_vel_b, proj_gravity,
-                                                            self.quadruped.q, self.quadruped.qd, policy_type="safe")
+                robot.q_des = actor_network.action(lin_acc_b, lin_vel_b, ang_vel_b, proj_gravity,
+                                                   robot.q, robot.qd, policy_type="safe")
 
             # for log
-            self.quadruped.baseTwistW_des[:3] = self.quadruped.b_R_w.T @ np.append(actor_network.velocity_cmd[:2], 0.0)
-            self.quadruped.baseTwistW_des[5] = actor_network.velocity_cmd[2]
+            robot.baseTwistW_des[:3] = robot.b_R_w.T @ np.append(actor_network.velocity_cmd[:2], 0.0)
+            robot.baseTwistW_des[5] = actor_network.velocity_cmd[2]
 
             # Add noise to simulate real-world actuation
-            self.quadruped.tau_ffwd = np.zeros(12)
-
-            if self.quadruped.time >= self.warmup_time:
-                noise = np.random.normal(0, noise_std, size=self.quadruped.tau_ffwd.shape)
-                self.quadruped.tau_ffwd += noise
+            robot.tau_ffwd = np.zeros(12)
+            if robot.time >= self.warmup_time:
+                robot.tau_ffwd += np.random.normal(0, noise_std, size=robot.tau_ffwd.shape)
             # switch off wbc
-            self.quadruped.grForcesW_des = np.zeros((12))
+            robot.grForcesW_des = np.zeros((12))
 
             # send to PD controller
-            self.quadruped.send_des_jstate(self.quadruped.q_des, np.zeros(12), self.quadruped.tau_ffwd)
-            self.quadruped.rate.sleep()
-            self.quadruped.time = np.round(self.quadruped.time + self.quadruped.dt, 4)  # np.array([self.loop_time]), 3)
-            self.quadruped.ros_pub.publishVisual(delete_markers=True)
+            robot.send_des_jstate(robot.q_des, np.zeros(12), robot.tau_ffwd)
+            robot.rate.sleep()
+            robot.time = np.round(robot.time + robot.dt, 4)
+            robot.ros_pub.publishVisual(delete_markers=True)
 
-        return np.array(self.observations), self.fallen_flag, self.capture_flag
+        return np.array(self.observations), self.fallen_flag, self.capture_flag, self.survived_flag
 
     # -------------------------------
     # Run a Batch of Simulations and Save Results
@@ -252,8 +271,12 @@ class DatasetManager():
             # history, previous action and decimation phase start over, seeded from the reset robot
             actor_network.reset()
 
-            obs, fallen, captured = self.run_single_simulation(actor_network=actor_network, noise_std=noise_std)
-            print(colored(f"Fallen {fallen}, Captured {captured}", "green"))
+            obs, fallen, captured, survived = self.run_single_simulation(actor_network=actor_network,
+                                                                         noise_std=noise_std)
+            print(colored(f"Fallen {fallen}, Captured {captured}, Survived {survived}", "green"))
+            if not len(obs):  # fell before the push: nothing recorded
+                n_obs_data -= 1
+                continue
             #print('obs', obs)
             if fallen and len(obs) > 10:
                 n_obs_data += 1
@@ -276,7 +299,7 @@ class DatasetManager():
 
                 max_len = max(max_len, len(obs))
 
-            stats.append((fallen, captured, len(obs)))
+            stats.append((fallen, captured, survived, len(obs)))
 
         # Pad observation arrays to same length in case of early termination (com comverget to cop)
         obs_dim = all_obs[0].shape[1]
@@ -290,6 +313,7 @@ class DatasetManager():
         np.save(os.path.join(save_path, "observations_dataset_abs_test.npy"), padded_obs)
 
         print(f"Episodi completati: {n_episodes}")
-        print(f"Caduti: {np.sum(stats[:, 0])}, CP raggiunto: {np.sum(stats[:, 1])}")
+        print(f"Caduti: {np.sum(stats[:, 0])}, CP raggiunto: {np.sum(stats[:, 1])}, "
+              f"sopravvissuti: {np.sum(stats[:, 2])}")
         print(f"Dati salvati in: {save_path}")
         print(f"Shape of observations: {padded_obs.shape}")
