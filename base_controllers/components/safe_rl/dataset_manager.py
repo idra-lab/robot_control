@@ -1,7 +1,5 @@
 import numpy as np
-import time
 import os
-from tqdm import tqdm
 from termcolor import colored
 
 
@@ -82,6 +80,29 @@ class DatasetManager():
 
             # store last observation
             self.obs_t_ = self.obs_tp1_
+
+    def wait_for_reset(self, base_pose, q_reset, timeout=3.0, still_time=0.1):
+        """Hold q_reset until the measurements show the reset robot standing still.  The reset goes
+        through Gazebo services while the subscribers still hold the previous episode's state, and
+        the teleport spikes the accelerometer and leaves the joints moving: started at once, the
+        episode flags the previous fall at t = 0 and seeds the policy with garbage.  The base back
+        at its reset position tells the state is fresh; then it has to be still for still_time."""
+        robot = self.quadruped
+        fresh, still_ticks = False, 0
+        for _ in range(int(timeout / robot.dt)):
+            if not fresh:
+                fresh = (np.linalg.norm(robot.basePoseW[:3] - base_pose[:3]) < 0.02
+                         and np.all(np.isfinite(robot.baseLinAccB)))
+            else:
+                still = (np.max(np.abs(robot.qd)) < 0.3 and np.linalg.norm(robot.baseTwistW) < 0.1
+                         and abs(np.linalg.norm(robot.baseLinAccB) - self.G) < 0.5)
+                still_ticks = still_ticks + 1 if still else 0
+                if still_ticks * robot.dt >= still_time:
+                    return True
+            robot.send_des_jstate(q_reset, np.zeros(12), np.zeros(12))
+            robot.rate.sleep()
+        print(colored("The reset robot did not settle; starting anyway", "red"))
+        return False
 
     # -------------------------------
     # Main Function: Single Simulation Episode
@@ -197,23 +218,27 @@ class DatasetManager():
             np.random.seed(seed)
 
         print("Running batch simulations...")
+        # every episode starts standing still in the policy's default posture, feet 3 mm above the
+        # ground (standingHeight is to the foot centres)
+        q_reset = np.array(actor_network.q_def, dtype=np.float64)
+        base_pose = np.array([0, 0, self.quadruped.standingHeight(q_reset) + 0.03, 0., 0., 0.])
 
-        # for i in tqdm(range(n_episodes)):
         n_obs_data = n_episodes
         for i in (range(n_episodes)):
             print(colored(f"Simulation {i}-----------------------", "blue"))
             # -------------------------------
             # Reset base
             # -------------------------------
+            self.quadruped.q_des = q_reset.copy()
+            # the reset reads the joints the previous episode left, so it comes before initVars; it
+            # leaves the stand-alone joint gains on: on the policy's the robot sags to the fall height
+            self.quadruped.resetRobot(basePoseDes=base_pose, q_reset=q_reset)
             self.quadruped.initVars()  # resets time etc
-            self.quadruped.q_des = self.quadruped.qj_0.copy()
-            self.quadruped.resetRobot(basePoseDes=np.array([0, 0, 0.36, 0., 0., 0.]))
-
-            actor_network.prev_action = np.zeros(12)
-            actor_network.decimation_counter = 0
-            # print('actor_network.prev_action',actor_network.prev_action)
-            # print('actor_network.decimation_counter',actor_network.decimation_counter)
-            # print('self.quadruped.time',self.quadruped.time)
+            self.wait_for_reset(base_pose, q_reset)
+            # RlVelocityController sets no gains itself
+            self.quadruped.pid.setPDjoints(actor_network.kp, actor_network.kd, np.zeros(12))
+            # history, previous action and decimation phase start over, seeded from the reset robot
+            actor_network.reset()
 
             obs, fallen, captured = self.run_single_simulation(actor_network=actor_network, noise_std=noise_std)
             print(colored(f"Fallen {fallen}, Captured {captured}", "green"))

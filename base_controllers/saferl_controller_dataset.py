@@ -12,12 +12,12 @@ np.set_printoptions(threshold=np.inf, precision=5, linewidth=1000, suppress=True
 from base_controllers.quadruped_controller import QuadrupedController
 from base_controllers.components.rl_velocity_controller.rl_controller import RlVelocityController
 from base_controllers.components.safe_rl.dataset_manager import DatasetManager
-from gazebo_ros import gazebo_interface
 from base_controllers.utils.pidManager import PidManager
 from gazebo_msgs.srv import GetModelState
 from gazebo_msgs.srv import SetModelStateRequest
 from gazebo_msgs.msg import ModelState
 import numpy as np
+import pinocchio as pin
 import time
 robotName = "aliengo"  # needs to inherit BaseController
 
@@ -29,13 +29,39 @@ class SafeRLControllerDataset(QuadrupedController):
         self.dm = DatasetManager(quadruped = self)
         self.get_state = ros.ServiceProxy('/gazebo/get_model_state', GetModelState)
 
-    def resetRobot(self, basePoseDes=np.array([0, 0, 0.3, 0., 0., 0.])):
-        # this sets the position of the joints
-        gazebo_interface.set_model_configuration_client(self.robot_name, '', self.joint_names, self.qj_0, '/gazebo')
-        self.send_des_jstate(self.q_des, np.zeros(12), np.zeros(12))
-        #print('self.q_des',self.q_des)
-        # this sets the position of the base without removing gravity
-        self.freezeBase(False,  basePoseW=basePoseDes)
+    def resetRobot(self, basePoseDes=np.array([0, 0, 0.3, 0., 0., 0.]), q_reset=None):
+        """Bring the robot back to q_reset (default q_0) at basePoseDes, at rest, and leave it on
+        the stand-alone joint gains (kp_j, kd_j).  The joints are driven there by the PD with the
+        robot lifted clear of the ground and gravity off, never teleported: gazebo_ros_control
+        unwraps each joint reading by the shortest angle, so a joint teleported by about pi or more
+        - a hip left at the +-pi end of its range by a fall, the Aliengo hfe range being [-pi, pi]
+        - reads 2 pi off for the rest of the run and the PD then drives it into its stop."""
+        q_reset = self.qj_0 if q_reset is None else q_reset
+        # drop the policy's last target, far off after a fall, before stiffening the gains
+        self.send_des_jstate(self.q, np.zeros(12), np.zeros(12))
+        self.pid.setPDjoints(self.kp_j, self.kd_j, self.ki_j)
+        self.freezeBase(True, basePoseW=np.array([0., 0., 1.0, 0., 0., 0.]), baseTwistW=np.zeros(6))
+        q_start = self.q.copy()
+        steps = int(0.6 / self.dt)
+        for i in range(1, steps + 1):
+            s = 0.5 - 0.5 * np.cos(np.pi * i / steps)
+            self.send_des_jstate(q_start + (q_reset - q_start) * s, np.zeros(12), np.zeros(12))
+            self.rate.sleep()
+        for _ in range(int(0.5 / self.dt)):
+            self.send_des_jstate(q_reset, np.zeros(12), np.zeros(12))
+            if np.max(np.abs(self.q - q_reset)) < 0.05 and np.max(np.abs(self.qd)) < 0.5:
+                break
+            self.rate.sleep()
+        # this sets the position of the base and turns gravity back on, at rest: without a twist
+        # freezeBase keeps the measured one
+        self.freezeBase(False, basePoseW=basePoseDes, baseTwistW=np.zeros(6))
+
+    def standingHeight(self, q_joints):
+        """Height of the base frame over the foot centres with the joints at q_joints."""
+        q = np.hstack([pin.neutral(self.robot.model)[0:7], self.u.mapToRos(q_joints)])
+        self.robot.forwardKinematics(q)
+        pin.updateFramePlacements(self.robot.model, self.robot.data)
+        return -np.mean([self.robot.data.oMf[i].translation[2] for i in self.robot.getEndEffectorsFrameId])
 
     def setBaseTwist(self, baseTwist=np.zeros(6)):
         current = self.get_state(self.robot_name, "")
