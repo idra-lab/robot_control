@@ -12,7 +12,7 @@ from base_controllers.utils.math_tools import *
 np.set_printoptions(threshold=np.inf, precision=5, linewidth=1000, suppress=True)
 from base_controllers.quadruped_controller import QuadrupedController
 from base_controllers.components.rl_velocity_controller.rl_controller import RlVelocityController
-from base_controllers.components.safe_rl.dataset_manager import DatasetManager
+from base_controllers.components.safe_rl.dataset_manager import DatasetManager, ROBOT_SETTINGS
 from base_controllers.utils.pidManager import PidManager
 from gazebo_msgs.srv import GetModelState
 from gazebo_msgs.srv import SetModelStateRequest, SetPhysicsPropertiesRequest
@@ -111,16 +111,17 @@ class SafeRLControllerDataset(QuadrupedController):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Push episodes for the safety value function (components/safe_rl/README.md)")
+    parser.add_argument("--robot", default="aliengo", choices=sorted(ROBOT_SETTINGS))
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=None, help="default: the clock")
-    parser.add_argument("--out", default="components/safe_rl/value_function/observation_datasets",
-                        help="folder for observations_dataset_abs_test.npy and its _episodes.csv")
+    parser.add_argument("--out", default=None, help="folder for observations_dataset_abs_test.npy and its _episodes.csv "
+                        "(default components/safe_rl/value_function/observation_datasets/<robot>)")
     parser.add_argument("--noise", type=float, default=10.0, help="torque noise std from the push on, Nm per joint and tick")
     parser.add_argument("--no-rviz", action="store_true")
     parser.add_argument("--gui", action="store_true", help="Gazebo GUI")
     args = parser.parse_args()
 
-    p = SafeRLControllerDataset('aliengo')
+    p = SafeRLControllerDataset(args.robot)
     world_name = 'rl_flat.world'
     p.state_estimation = 'ground_truth'  # 'odometry','imu', 'pronto', 'ground_truth' (only sim)
     rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=True,debug=False, policy="velocity")
@@ -141,7 +142,8 @@ if __name__ == '__main__':
         p.slowDown(max_update_rate=200)
         # the episode (command range, push, horizon, backup policy) is set by DatasetManager's
         # attributes, e.g. p.dm.kick_range = (0.0, 3.0)
-        p.dm.run_batch_simulations(rl_controller, n_episodes=args.episodes, save_path=args.out, noise_std=args.noise,
+        out = args.out or f"components/safe_rl/value_function/observation_datasets/{args.robot}"
+        p.dm.run_batch_simulations(rl_controller, n_episodes=args.episodes, save_path=out, noise_std=args.noise,
                                    seed=int(time.time()) if args.seed is None else args.seed)
 
     except (ros.ROSInterruptException, ros.service.ServiceException):

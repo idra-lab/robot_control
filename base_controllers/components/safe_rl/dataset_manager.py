@@ -2,6 +2,15 @@ import numpy as np
 import os
 from termcolor import colored
 
+# Per robot.  Fall rule: run to the ground, the walking policy recovered from at most 29 deg of
+# inclination (Aliengo, 320 pushed episodes; Go2 15 deg, 200), the base never below 0.27 m (Go2
+# 0.26 m), and every fall went past 64 deg (Go2 85 deg): the thresholds sit in those gaps.  The kick
+# range spans the robot's fall boundary, with about 45 % of the episodes falling.
+ROBOT_SETTINGS = {
+    "aliengo": {"INCLINATION_THRESHOLD": 45.0, "FALL_HEIGHT_THRESHOLD": 0.2, "kick_range": (0.0, 3.0)},
+    "go2": {"INCLINATION_THRESHOLD": 45.0, "FALL_HEIGHT_THRESHOLD": 0.2, "kick_range": (0.0, 2.5)},
+}
+
 
 # the episodes CSV written next to a dataset, one row per episode (README.md)
 EPISODE_COLUMNS = ("episode", "cmd_vx", "cmd_vy", "cmd_wz", "push_time", "kick", "kick_dir", "base_vx", "base_vy",
@@ -15,9 +24,7 @@ class DatasetManager():
         # -------------------------------
         # Simulation Thresholds and Constants
         # -------------------------------
-        # Run to the ground (320 pushed episodes), the walking policy recovered from at most 29 deg of
-        # inclination with the base above 0.27 m, and every fall went past 64 deg, ending on its side or
-        # its belly (base at 0.11 m).  The thresholds sit in those gaps.
+        # per robot, ROBOT_SETTINGS
         self.INCLINATION_THRESHOLD = 45.0  # degrees - max allowed inclination before considering robot as fallen
         self.FALL_HEIGHT_THRESHOLD = 0.2  # meters - min allowed height before considering robot as fallen
         self.CP_SAFE_RADIUS = 0.05  # meters - acceptable radius to consider CP successful
@@ -43,7 +50,7 @@ class DatasetManager():
         # robot mass x kick / push_duration on the base for push_duration s, the kick uniform in
         # kick_range m/s, the direction uniform in the base frame.
         self.push_window = (2.0, 3.0)
-        self.kick_range = (0.0, 3.0)
+        self.kick_range = (0.0, 3.0)  # per robot, ROBOT_SETTINGS
         self.push_duration = 0.2
         # The episode ends at a fall, at capture (capture point within CP_SAFE_RADIUS for
         # CAPTURE_HOLD s, from the end of the push) or with the push survived for post_push_time s
@@ -52,6 +59,10 @@ class DatasetManager():
         # None: the walking policy throughout.  Else the safe policy takes over, at zero command,
         # backup_delay s after the push starts.
         self.backup_delay = None
+        if quadruped.robot_name not in ROBOT_SETTINGS:
+            raise ValueError(f"no dataset settings for {quadruped.robot_name}: add it to ROBOT_SETTINGS")
+        for name, value in ROBOT_SETTINGS[quadruped.robot_name].items():
+            setattr(self, name, value)
         self.episode = {}
 
     # -------------------------------
