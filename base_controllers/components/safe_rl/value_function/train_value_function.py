@@ -2,10 +2,14 @@
 #         TD-Learning for Safety-V(x)
 # ====================================
 """
-    python3 train_value_function.py [--data <dataset.npy> ...] [--model <model.pkl>] [--epochs N]
+    python3 train_value_function.py [--data <dataset.npy> ...] [--val <dataset.npy> ...] [--model <model.pkl>] [--epochs N]
 
 Several datasets are pooled, e.g. runs with different seeds (saferl_controller_dataset.py).  Every
 transition of every episode is a training sample; evaluate_value_function.py checks the result.
+With --val, datasets kept out of the training: every 25 epochs V of their states is scored against
+how their episode ended (Brier score, the mean of (V - 1)^2 on recovering episodes and V^2 on falling
+ones), and the model saved is the one that scored best: on the training episodes V keeps improving
+long after it stops improving on unseen ones.
 """
 
 import argparse
@@ -27,9 +31,11 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 parser = argparse.ArgumentParser(description="TD learning of the safety value function")
 parser.add_argument("--data", nargs="+", default=[os.path.join(BASE_DIR, "observation_datasets/observations_dataset_abs_test.npy")])
 parser.add_argument("--model", default=os.path.join(BASE_DIR, "models/VF_abs_test.pkl"))
+parser.add_argument("--val", nargs="*", default=[])
 parser.add_argument("--epochs", type=int, default=1000)
 args = parser.parse_args()
 data_paths = [os.path.abspath(path) for path in args.data]
+val_paths = [os.path.abspath(path) for path in args.val]
 model_path = os.path.abspath(args.model)
 os.chdir(BASE_DIR)   # force working directory to match script directory
 print("Working directory set to:", BASE_DIR)
@@ -165,6 +171,11 @@ print(f"Transitions: {len(data)}, labelled fallen {int(fallen.sum())}, labelled 
 states, mean, std = normalize_states(states)
 # the next states with the states' statistics: V sees both through the same normalisation
 next_states = (next_states - mean) / (std + 1e-8)
+if val_paths:
+    val_sets = [load_transitions(path) for path in val_paths]
+    val_states = jnp.array((np.concatenate([t[:, :input_dim] for t, _ in val_sets]) - mean) / (std + 1e-8),
+                           dtype=jnp.float32)
+    val_outcome = 1.0 - np.concatenate([fell for _, fell in val_sets])
 
 # ====================================
 #         Convert to JAX tensors
@@ -215,6 +226,7 @@ epochs = args.epochs
 batch_size = 512
 rng = jax.random.PRNGKey(int(time.time()))
 losses, min_losses, max_losses = [], [], []
+best_brier, best_params, best_epoch = np.inf, None, 0
 
 with tqdm(range(epochs), desc="Epoch") as pbar:
     #for each training epoch
@@ -255,6 +267,16 @@ with tqdm(range(epochs), desc="Epoch") as pbar:
         max_losses.append(np.max(batch_losses))
         #Update progress bar
         pbar.set_postfix({"Loss": f"{epoch_avg:.2e}", "Hz": f"{1 / (time.time() - start_time):.2f}"})
+        # keep the model that scores best on the held-out episodes
+        if val_paths and (epoch + 1) % 25 == 0:
+            brier = np.mean((np.asarray(model.apply(state.params, val_states)) - val_outcome) ** 2)
+            if brier < best_brier:
+                best_brier, best_params, best_epoch = brier, state.params, epoch + 1
+            pbar.write(f"epoch {epoch + 1}: held-out Brier score {brier:.4f} (best {best_brier:.4f}, epoch {best_epoch})")
+
+if best_params is not None:
+    print(f"Held-out Brier score best at epoch {best_epoch}: {best_brier:.4f}, that model is saved")
+    state = state.replace(params=best_params)
 
 # ====================================
 #           Save Model
