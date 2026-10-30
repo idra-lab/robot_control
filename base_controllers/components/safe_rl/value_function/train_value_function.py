@@ -1,7 +1,14 @@
 # ====================================
 #         TD-Learning for Safety-V(x)
 # ====================================
+"""
+    python3 train_value_function.py [--data <dataset.npy> ...] [--model <model.pkl>] [--epochs N]
 
+Several datasets are pooled, e.g. runs with different seeds (saferl_controller_dataset.py).  Every
+transition of every episode is a training sample; evaluate_value_function.py checks the result.
+"""
+
+import argparse
 import os
 import time
 import copy
@@ -17,6 +24,13 @@ from flax.training import train_state
 import optax
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+parser = argparse.ArgumentParser(description="TD learning of the safety value function")
+parser.add_argument("--data", nargs="+", default=[os.path.join(BASE_DIR, "observation_datasets/observations_dataset_abs_test.npy")])
+parser.add_argument("--model", default=os.path.join(BASE_DIR, "models/VF_abs_test.pkl"))
+parser.add_argument("--epochs", type=int, default=1000)
+args = parser.parse_args()
+data_paths = [os.path.abspath(path) for path in args.data]
+model_path = os.path.abspath(args.model)
 os.chdir(BASE_DIR)   # force working directory to match script directory
 print("Working directory set to:", BASE_DIR)
 
@@ -27,7 +41,6 @@ os.environ["XLA_FLAGS"] = os.environ.get("XLA_FLAGS", "") + " --xla_gpu_triton_g
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "True"
 
-model_path = 'models/VF_abs_test.pkl'
 load_parameters = False
 
 # ====================================
@@ -74,33 +87,6 @@ def loss_fn(params, batch_states, batch_next_states, batch_fallen, batch_cp, tar
     #compute mean squared error
     return jnp.mean(jnp.square(V_s - target))
 
-def fill_padding_with_last_valid(states, next_states, fallen, capt_p):
-    states_filled = np.copy(states)
-    next_states_filled = np.copy(next_states)
-    fallen_filled = np.copy(fallen)
-    capt_p_filled = np.copy(capt_p)
-
-    num_episodes, T, _ = states.shape
-
-    for ep in range(num_episodes):
-        # Trova primo indice dove compare uno stato di solo zeri
-        zero_mask = np.all(states[ep] == 0, axis=1)
-        if not np.any(zero_mask):
-            continue  # nessun padding, salta episodio
-
-        first_zero_idx = np.argmax(zero_mask)
-
-        # Prendi ultimo stato valido
-        last_valid_state = states[ep, first_zero_idx - 1]
-
-        for t in range(first_zero_idx, T):
-            states_filled[ep, t] = last_valid_state
-            next_states_filled[ep, t] = last_valid_state
-            fallen_filled[ep, t] = 0
-            capt_p_filled[ep, t] = 1.0
-
-    return states_filled, next_states_filled, fallen_filled, capt_p_filled
-
 @jax.jit
 def train_step(state, batch_states, batch_next_states, batch_fallen, batch_cp, target_params):
     #loss = loss_fn(params, batch_states, batch_next_states, batch_fallen, batch_cp, target_params)
@@ -122,36 +108,25 @@ def closest_power_of_2(n):
     return 2 ** (n.bit_length() - 1)
 
 def get_batches(states, next_states, fallen, capt_p, batch_size, rng):
+    """The transitions shuffled into minibatches: (num_batches, batch_size, ...) per variable."""
     batch_size = closest_power_of_2(batch_size)
-    num_episodes, num_time_steps, _ = states.shape
-
-    # Max number of episodes we can actually fit
-    episodes_per_batch = min(num_episodes, math.ceil(batch_size / num_time_steps))
+    num_samples = states.shape[0]
 
     # Ensure at least one batch
-    num_batches = max(1, num_episodes // episodes_per_batch)
+    num_batches = max(1, num_samples // batch_size)
 
     rng, subkey = jax.random.split(rng)
-    total_needed = num_batches * episodes_per_batch
+    total_needed = num_batches * batch_size
 
     # If dataset is too small, repeat indices
-    perm = jax.random.permutation(subkey, num_episodes)
-    if total_needed > num_episodes:
+    perm = jax.random.permutation(subkey, num_samples)
+    if total_needed > num_samples:
         # Tile the permutation instead of causing slicing errors
-        repeats = math.ceil(total_needed / num_episodes)
+        repeats = math.ceil(total_needed / num_samples)
         perm = jnp.tile(perm, repeats)
 
-    indices = perm[:total_needed].reshape(num_batches, episodes_per_batch)
-    # extract(idx) produces a minibatch: s  → (batch_size, state_dim)
-    def extract(idx):
-        #(episodes_per_batch * T, D) then keeps only the first N samples to match batch size.
-        s = states[idx].reshape(-1, states.shape[-1])[:batch_size]
-        ns = next_states[idx].reshape(-1, next_states.shape[-1])[:batch_size]
-        d = fallen[idx].reshape(-1)[:batch_size]
-        cp = capt_p[idx].reshape(-1)[:batch_size]
-        return s, ns, d, cp
-
-    batches = jax.vmap(extract)(indices)
+    indices = perm[:total_needed].reshape(num_batches, batch_size)
+    batches = (states[indices], next_states[indices], fallen[indices], capt_p[indices])
     return batches, rng
 
 
@@ -159,44 +134,37 @@ def get_batches(states, next_states, fallen, capt_p, batch_size, rng):
 #         State Normalization
 # ====================================
 def normalize_states(states):
-    mean = np.mean(states, axis=(0, 1))
-    std = np.std(states, axis=(0, 1))
+    mean = np.mean(states, axis=0)
+    std = np.std(states, axis=0)
     return (states - mean) / (std + 1e-8), mean, std
 
 # ====================================
 #            Load Dataset
 # ====================================
-data_path = 'observation_datasets/observations_dataset_abs_test.npy'
-data = np.load(data_path)
-print("Dataset loaded:", data.shape)
 input_dim = 30 # obst, obs_t+1, fallen, captured
-states = data[:, :, :input_dim]
-next_states = data[:, :, input_dim:2 * input_dim]
-fallen = data[:, :, -2]
-capt_p = data[:, :, -1]
 
-f_count = 0
-cp_count = 0
-for i in fallen:
-    if np.any(i==1):
-        f_count += 1
-for i in capt_p:
-    if np.any(i==1):
-        cp_count += 1
-print(f_count,cp_count)
+def load_transitions(path):
+    """The transitions of a dataset, one per row, and whether the episode of each fell.  A dataset
+    row is an episode, zero padded to the longest one.  The padding is left out: filled in with the
+    episode's last state, it weighed that state hundreds of times over every other."""
+    data = np.load(path)
+    print("Dataset loaded:", path, data.shape)
+    valid = np.any(data[:, :, :input_dim] != 0, axis=2)
+    episode_fell = np.any(data[:, :, -2] == 1, axis=1)
+    return data[valid], np.repeat(episode_fell, valid.sum(axis=1))
 
-#exit()
+datasets = [load_transitions(path) for path in data_paths]
+data = np.concatenate([transitions for transitions, _ in datasets])
+episode_fell = np.concatenate([fell for _, fell in datasets])
+states = data[:, :input_dim]
+next_states = data[:, input_dim:2 * input_dim]
+fallen = data[:, -2]
+capt_p = data[:, -1]
+print(f"Transitions: {len(data)}, labelled fallen {int(fallen.sum())}, labelled success {int(capt_p.sum())}")
 
-states, next_states, fallen, capt_p = fill_padding_with_last_valid(states, next_states, fallen, capt_p)
-
-""" # Esempio: trova gli indici degli episodi con almeno un 1
-episode_with_fallen = np.where(np.any(fallen == 1, axis=1))[0]
-print("Episodi con almeno un 'fallen':", episode_with_done)
-exit() """
-
-print("Observation dataset shape:", states.shape)
 states, mean, std = normalize_states(states)
-next_states, _, _ = normalize_states(next_states)
+# the next states with the states' statistics: V sees both through the same normalisation
+next_states = (next_states - mean) / (std + 1e-8)
 
 # ====================================
 #         Convert to JAX tensors
@@ -209,7 +177,8 @@ capt_p = jnp.array(capt_p, dtype=jnp.float32)
 # ====================================
 #    Initialize / Load Model Params
 # ====================================
-
+# instantiate the model
+model = ValueNetwork()
 if load_parameters:
     try:
         with open(model_path, 'rb') as f:
@@ -220,8 +189,6 @@ if load_parameters:
         print("Model file not found. Starting from scratch.")
 else:
     key = jax.random.PRNGKey(42)  # seed random key for any operation involving randomness (weight initialization, random sampling, noise injection, etc.).
-    # instantiate the model
-    model = ValueNetwork()
     # In Flax, models are defined as pure functions and do not carry parameters inside them.
     # Parameters are stored outside the model.
     params = model.init(key, jnp.ones((1, input_dim)))  # runs the model once with the given input,but instead of producing outputs, it creates the network’s weights.
@@ -244,7 +211,7 @@ state = TrainState.create(apply_fn=model.apply, params=params, tx=optimizer)
 # ====================================
 #           Training Loop
 # ====================================
-epochs = 1000
+epochs = args.epochs
 batch_size = 512
 rng = jax.random.PRNGKey(int(time.time()))
 losses, min_losses, max_losses = [], [], []
@@ -297,47 +264,14 @@ with open(model_path, 'wb') as f:
 print("Model saved at", model_path)
 
 # ====================================
-#       Value Estimate Example
-# ====================================
-sample_state = states[5, 0, :]
-v_est = model.apply(state.params, sample_state)
-print(f"Estimated V(x) (prob. survival) for good state: {v_est.item():.4f}")
-
-sample_state = states[239, 0, :]
-v_est = model.apply(state.params, sample_state)
-print(f"Estimated V(x) (prob. survival) for bad state: {v_est.item():.4f}")
-
-
-# ====================================
 #       Value Estimate Statistics
 # ====================================
-
-# Stimiamo V(x) per ogni primo stato di ogni episodio
-all_v_estimates = jnp.array([model.apply(state.params, s[0]) for s in states])
-
-# Identifica episodi che hanno avuto una terminazione
-terminated_mask = jnp.any(fallen == 1, axis=1)
-non_terminated_mask = ~terminated_mask
-
-# Seleziona stime di V(x) per i due gruppi
-v_est_terminated = all_v_estimates[terminated_mask]
-v_est_non_terminated = all_v_estimates[non_terminated_mask]
-
-# Calcola statistiche
-mean_terminated = jnp.mean(v_est_terminated)
-std_terminated = jnp.std(v_est_terminated)
-
-mean_non_terminated = jnp.mean(v_est_non_terminated)
-std_non_terminated = jnp.std(v_est_non_terminated)
-
-# Stampa risultati
+# V(x) of every state, grouped by how its episode ended: the states of a falling episode, from the
+# push to the fall, against those of the episodes that recovered (evaluate_value_function.py has
+# the details, e.g. how long before a fall V drops)
+v_est = np.asarray(model.apply(state.params, states))
 print("\n===== Value Estimate Statistics =====")
-print(f"Episodes with termination   : n = {v_est_terminated.shape[0]}")
-print(f"Mean V(x): {mean_terminated:.4f}, Std: {std_terminated:.4f}")
-print()
-print(f"Episodes without termination: n = {v_est_non_terminated.shape[0]}")
-print(f"Mean V(x): {mean_non_terminated:.4f}, Std: {std_non_terminated:.4f}")
-
-print("\n===== All V Estimates for Terminated Episodes =====")
-print(v_est_terminated)
+for name, mask in (("Episodes that fell", episode_fell), ("Episodes that recovered", ~episode_fell)):
+    print(f"{name:24s}: {mask.sum()} states, mean V(x) {v_est[mask].mean():.4f}, std {v_est[mask].std():.4f}, "
+          f"V(x) < 0.5 in {np.mean(v_est[mask] < 0.5):.1%}")
 print("=======================================")
