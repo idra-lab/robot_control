@@ -3,6 +3,7 @@
 # Threads inherit the policy, so the whole start-up runs real-time too.
 #
 #   ./run_rl_controller.sh --robot go2 --real --input joy          # priority 80, no pinning
+#   ./run_rl_controller.sh --robot go2 --real --input joy --safety-filter   # with the safety filter
 #   CPU=3 PRIO=90 ./run_rl_controller.sh --robot go2 --real        # pinned to core 3
 #
 # Arguments go to rl_quadruped_controller.py.  Pinning helps only on an isolated core (host kernel
