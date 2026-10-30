@@ -168,6 +168,25 @@ class RosPub():
         self.id += 1
         self.markerArray.markers.append(marker)
 
+    def add_text(self, pos, text, color=np.array([1., 1., 1.]), height=0.08):
+        """A text facing the camera at pos, on the /vis markers; color is rgb in 0..1."""
+        marker = Marker()
+        marker.header.frame_id = self.visual_frame
+        marker.type = marker.TEXT_VIEW_FACING
+        marker.action = marker.ADD
+        marker.text = text
+        marker.scale.z = height
+        marker.color.r, marker.color.g, marker.color.b = color[0], color[1], color[2]
+        marker.color.a = 1.0
+        marker.pose.orientation.w = 1.0
+        marker.pose.position.x = pos[0]
+        marker.pose.position.y = pos[1]
+        marker.pose.position.z = pos[2]
+        marker.lifetime = ros.Duration(self.markers_time_to_live)
+        marker.id = self.id
+        self.id += 1
+        self.markerArray.markers.append(marker)
+
     def add_plane(self, pos=np.array([0,0,0]), orient = np.array([0,0,0]),  color="red", alpha=0.5):
         marker = Marker()
         marker.header.frame_id = self.visual_frame
