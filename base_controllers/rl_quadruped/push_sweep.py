@@ -160,7 +160,8 @@ def run_trial(args):
         sys.exit("the safe variant only runs at the zero command")
 
     controller = RlQuadrupedController(args.robot, input_device="none", skip_calibration=True,
-                                       use_rviz=False, realtime=False)
+                                       use_rviz=False, realtime=False, safety_filter=args.safety_filter,
+                                       filter_threshold=args.filter_threshold)
     controller.startController(additional_args=["gui:=false"])
 
     result = {
@@ -172,7 +173,7 @@ def run_trial(args):
         "policy_md5": {os.path.basename(p): md5(p) for p in policy_files(args.robot)},
         "protocol": PROTOCOL, "forces_planned": [args.force],
         "h0": None, "pushes": [], "failure_force": None, "failure_reason": None,
-        "max_survived": None, "error": None,
+        "max_survived": None, "error": None, "safety_filter": args.safety_filter,
     }
 
     def sim_now():
@@ -246,6 +247,9 @@ def run_trial(args):
     def finish():
         if result["failure_force"] is None and result["error"] is None:
             result["max_survived"] = args.force
+        if controller.safety_filter is not None:
+            result["filter_threshold"] = controller.safety_filter.threshold
+            result["filter_switches"] = controller.safety_filter.backup_trigger_counter
         result["wall_s"] = wall.monotonic() - wall_start
         try:
             result["sim_s"] = sim_now() - sim_start if sim_start is not None else None
@@ -758,6 +762,9 @@ def parse_args(argv=None):
     trial.add_argument("--seed", type=int, default=0, help="seeds the moment of the push")
     trial.add_argument("--repeat", type=int, default=0, help="run index, recorded in the result")
     trial.add_argument("--out", required=True, help="result file (json)")
+    trial.add_argument("--safety-filter", action="store_true",
+                       help="run the controller with its safety filter (--safety-filter)")
+    trial.add_argument("--filter-threshold", type=float, default=None, help="default per robot")
 
     sweep = sub.add_parser("sweep", help="the adaptive sweep, resumable")
     sweep.add_argument("--robot", default="aliengo")
