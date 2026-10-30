@@ -14,7 +14,7 @@ from base_controllers.components.rl_velocity_controller.rl_controller import RlV
 from base_controllers.components.safe_rl.dataset_manager import DatasetManager
 from base_controllers.utils.pidManager import PidManager
 from gazebo_msgs.srv import GetModelState
-from gazebo_msgs.srv import SetModelStateRequest
+from gazebo_msgs.srv import SetModelStateRequest, SetPhysicsPropertiesRequest
 from gazebo_msgs.msg import ModelState
 from geometry_msgs.msg import Point, Wrench
 import numpy as np
@@ -77,6 +77,18 @@ class SafeRLControllerDataset(QuadrupedController):
         if not response.success:
             raise RuntimeError(f"push refused: {response.status_message}")
 
+    def slowDown(self, max_update_rate):
+        """Run the simulation at max_update_rate physics steps per wall second, every other physics
+        setting left as the world file has it.  setSimSpeed would also put the 1 mm contact surface
+        layer back that rl_flat.world removes."""
+        physics = self.get_physics_client()
+        req = SetPhysicsPropertiesRequest()
+        req.time_step = physics.time_step
+        req.max_update_rate = max_update_rate
+        req.gravity = physics.gravity
+        req.ode_config = physics.ode_config
+        self.set_physics_client(req)
+
     def setBaseTwist(self, baseTwist=np.zeros(6)):
         # Gazebo sets this twist on every link of the model, so the joint velocities go to zero:
         # not a push, use push()
@@ -98,19 +110,27 @@ class SafeRLControllerDataset(QuadrupedController):
 
 if __name__ == '__main__':
     p = SafeRLControllerDataset('aliengo')
-    world_name = 'fast.world'
+    world_name = 'rl_flat.world'
     use_gui=False
     p.state_estimation = 'ground_truth'  # 'odometry','imu', 'pronto', 'ground_truth' (only sim)
     rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=True,debug=False, policy="velocity")
 
     try:
+        # rl_flat.world, as the RL controller (rl_quadruped) runs the policy: no 1 mm contact
+        # surface layer, which the policy never saw.  Ground truth contacts would force slow.world,
+        # and the dataset does not use contacts.
         p.startController(world_name=world_name,
-                          use_ground_truth_contacts=True,
+                          use_ground_truth_contacts=False,
                           additional_args=['gui:=' + str(use_gui),'rviz:=true'])
 
         p.pid = PidManager(p.joint_names)
+        # RlVelocityController sets no gains itself: the dataset manager puts the policy's kp, kd
+        # (its json) on after every reset
         p.pid.setPDjoints(rl_controller.kp, rl_controller.kd, np.full(12, 0))
-        p.setSimSpeed(dt_sim=0.001, max_update_rate=200)
+        # 0.2x real time, so the Python loop keeps up with every control tick
+        p.slowDown(max_update_rate=200)
+        # the episode (command range, push, horizon, backup policy) is set by DatasetManager's
+        # attributes, e.g. p.dm.kick_range = (0.0, 3.0)
         p.dm.run_batch_simulations(rl_controller, n_episodes=100, save_path="components/safe_rl/value_function/observation_datasets", noise_std=10.0, seed = int(time.time()))
 
     except (ros.ROSInterruptException, ros.service.ServiceException):
