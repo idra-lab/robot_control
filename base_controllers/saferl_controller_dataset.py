@@ -78,14 +78,14 @@ class SafeRLControllerDataset(QuadrupedController):
         if not response.success:
             raise RuntimeError(f"push refused: {response.status_message}")
 
-    def slowDown(self, max_update_rate):
-        """Run the simulation at max_update_rate physics steps per wall second, every other physics
-        setting left as the world file has it.  setSimSpeed would also put the 1 mm contact surface
-        layer back that rl_flat.world removes."""
+    def setSpeed(self, speed):
+        """Run the simulation at speed x real time (1: real time), every other physics setting left
+        as the world file has it.  setSimSpeed would also put the 1 mm contact surface layer back
+        that rl_flat.world removes."""
         physics = self.get_physics_client()
         req = SetPhysicsPropertiesRequest()
         req.time_step = physics.time_step
-        req.max_update_rate = max_update_rate
+        req.max_update_rate = speed / physics.time_step
         req.gravity = physics.gravity
         req.ode_config = physics.ode_config
         self.set_physics_client(req)
@@ -117,6 +117,8 @@ if __name__ == '__main__':
     parser.add_argument("--out", default=None, help="folder for observations_dataset_abs_test.npy and its _episodes.csv "
                         "(default components/safe_rl/value_function/observation_datasets/<robot>)")
     parser.add_argument("--noise", type=float, default=10.0, help="torque noise std from the push on, Nm per joint and tick")
+    parser.add_argument("--speed", type=float, default=1.0,
+                        help="x real time; an episode whose loop misses control ticks is discarded")
     parser.add_argument("--no-rviz", action="store_true")
     parser.add_argument("--gui", action="store_true", help="Gazebo GUI")
     args = parser.parse_args()
@@ -138,8 +140,9 @@ if __name__ == '__main__':
         # RlVelocityController sets no gains itself: the dataset manager puts the policy's kp, kd
         # (its json) on after every reset
         p.pid.setPDjoints(rl_controller.kp, rl_controller.kd, np.full(12, 0))
-        # 0.2x real time, so the Python loop keeps up with every control tick
-        p.slowDown(max_update_rate=200)
+        # real time by default: the loop takes about 0.6 ms of the 2 ms control period, also with
+        # 8 simulations in parallel; episodes where it missed ticks are discarded
+        p.setSpeed(args.speed)
         # the episode (command range, push, horizon, backup policy) is set by DatasetManager's
         # attributes, e.g. p.dm.kick_range = (0.0, 3.0)
         out = args.out or f"components/safe_rl/value_function/observation_datasets/{args.robot}"
