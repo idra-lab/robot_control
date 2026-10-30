@@ -40,6 +40,10 @@ cd $LOCOSIM_DIR/robot_control/base_controllers/rl_quadruped
 python3 rl_quadruped_controller.py --robot go2                # Gazebo, keyboard
 python3 rl_quadruped_controller.py --robot go2 --input joy    # Gazebo, Xbox pad
 ./run_rl_controller.sh --robot go2 --real --input joy         # real robot
+
+# with the safety filter (off by default, see State machine)
+python3 rl_quadruped_controller.py --robot go2 --safety-filter
+./run_rl_controller.sh --robot go2 --real --input joy --safety-filter
 ```
 
 | Argument | Default | Effect |
@@ -55,6 +59,9 @@ python3 rl_quadruped_controller.py --robot go2 --input joy    # Gazebo, Xbox pad
 | `--no-telemetry` | on | do not publish the telemetry topics |
 | `--bag [PREFIX]` | off | record joint and telemetry topics, default name `rl_<robot>` |
 | `--realtime` / `--no-realtime` | only with `--real` | SCHED_FIFO for all threads and GC tuning |
+| `--safety-filter` | off | `RL` switches to `SAFE_STOP` by itself when the value function says the walking policy is about to fall (below) |
+| `--filter-threshold V` | per robot, 0.5 | the safety filter's threshold |
+| `--filter-model ONNX` | `VF_push_end_<robot>.onnx` | the value function, from `components/safe_rl/value_function/models/` |
 
 `run_rl_controller.sh` starts the process with `chrt -f 80` so start-up is real-time too; `CPU=3`
 also pins it with `taskset` (useful only on a core isolated with
@@ -104,7 +111,7 @@ any state ──[emergency]──▶ DAMPING ──▶ DONE
 | `STAND_UP` | stand | quintic from `q_fold` to the policy's `q_default` |
 | `STANDING` | stand | hold `q_default`, safety checks on |
 | `RL` | policy | walking policy on the operator command |
-| `SAFE_STOP` | policy | `safe` variant at zero command |
+| `SAFE_STOP` | policy | `safe` variant at zero command; entered by the operator or, with `--safety-filter`, by the filter |
 | `STAND_DOWN` | stand | quintic to `q_fold`, back to `FOLD` |
 | `DAMPING` | kp = 0, `kd_damping` | the robot sinks under its weight, feed-forward ramped out |
 | `DONE` | zero | joints released, the loop ends |
@@ -134,6 +141,28 @@ Aliengo 0.17-0.18), the rest within 0.03 rad, and the policy narrows the stance 
 from the current measurement (as an Isaac Lab reset). Switching between the two keeps the history,
 so the hand-over works mid-stride. Every entry zeroes the stored command. Both states leave to
 `DAMPING` when roll or pitch exceed `max_roll_pitch` or a joint exceeds `max_joint_vel`.
+
+**Safety filter** (`--safety-filter`, off by default; `components/safe_rl/README.md`). In `RL` a
+value function V estimates, 100 times a second, the chance that the walking policy recovers from
+the current state: projected gravity and angular velocity from the IMU, joint positions and
+velocities. Below the threshold the controller switches to `SAFE_STOP`, mid-stride like the operator
+switch. Once V has stayed above it for 2 s, it goes back to `RL`, at zero command like any entry.
+The filter starts 1 s after the walking policy does, as it was tested (it never saw the gait start).
+A safe stop the operator asks for stays until the operator ends it, also when the filter started
+it; resuming from a filter's safe stop starts the filter over. The value function is an ONNX
+model run on onnxruntime with one thread, like the policy, loaded and run once at start-up. An
+evaluation takes 0.015 ms on average and 0.12 ms at worst; with the filter on, the worst
+computation per tick in the push trials was 1.1-1.6 ms of the 2 ms (0.9-1.4 ms without it).
+
+With `--bag`, the filter's topics are recorded with the rest of the telemetry. The value function
+comes from `components/safe_rl` (README there): retraining it replaces
+`models/VF_push_end_<robot>.onnx`, which the next start loads; `--filter-model` runs another one.
+
+In push trials of this controller (`push_sweep.py trial --safety-filter`), with kicks between what
+the walking and the safe policy survive (Go2 standing pushed left at 1.7 m/s and walking forward
+pushed right at 1.4 m/s; Aliengo standing pushed left at 2.2 m/s and walking pushed right at
+2.0 m/s), all 8 fell without the filter; with it, 13 of 14 survived. It has not run on the robots
+yet.
 
 ## Policy contract
 
@@ -228,6 +257,7 @@ Published under `/<robot>/rl/` (joint data is already on `/command` and `/<robot
 | `loop/compute_mean_ms`, `loop/compute_max_ms` | 10 Hz | computation per tick (2 ms budget) |
 | `policy/inferences` | 10 Hz | inference count |
 | `push` | per push, latched | applied force, world frame (Gazebo) |
+| `safety_filter/value`, `safety_filter/backup` | 100 Hz, with `--safety-filter` | V, and 1 while the filter wants the safe policy |
 
 The controller also broadcasts `world -> base_link` for rviz: ground-truth position in Gazebo,
 origin with the measured attitude on the robot.
@@ -267,7 +297,7 @@ python3 push_sweep.py sweep --robot go2 --out-dir ~/trento_lab_home/push_sweep/g
 python3 push_sweep.py plot ~/trento_lab_home/push_sweep/go2
 # push_sweep.png -> push_sweep_results/go2_sweep.png, push_survival.png -> go2_survival.png,
 # push_sweep.csv -> go2.csv
-# one push, inside the container
+# one push, inside the container (--safety-filter: with the controller's safety filter)
 python3 push_sweep.py trial --robot go2 --cmd 0.3 0 0 --direction left --force 100 --out r.json
 ```
 
