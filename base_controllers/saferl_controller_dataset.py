@@ -3,6 +3,19 @@
 Created on Fri Nov  2 16:52:08 2018
 
 @author: mfocchi
+
+Push episodes in Gazebo for the safety filter's value function (components/safe_rl/README.md).
+Each episode resets the robot standing in the policy's default posture, walks it at a command drawn
+as in training, pushes it once and labels how it ends (DatasetManager, dataset_manager.py).
+
+    python3 saferl_controller_dataset.py --robot go2 --episodes 70 --seed 501 --out <folder>     # dataset
+    python3 saferl_controller_dataset.py --robot go2 ... --from-push-start      # test data, walking state included
+    python3 saferl_controller_dataset.py --robot go2 ... --fall-check           # run to the ground: fall_rule.py
+    python3 saferl_controller_dataset.py --robot go2 ... --filter               # closed loop with the safety filter
+
+The same --seed gives the same commands and pushes, so a run with --filter compares episode by
+episode with one without (compare_filter.py).  It runs in real time (--speed); several batches run
+in parallel with components/safe_rl/run_batches.sh, the whole pipeline with run_pipeline.sh.
 """
 
 from __future__ import print_function
@@ -120,6 +133,11 @@ if __name__ == '__main__':
     parser.add_argument("--filter", nargs="?", const="default", default=None, metavar="MODEL",
                         help="run the safety filter (default model: models/VF_push_end_<robot>.onnx)")
     parser.add_argument("--threshold", type=float, default=None, help="safety filter threshold (default per robot)")
+    parser.add_argument("--from-push-start", action="store_true",
+                        help="record from the push start, not its end: test data with the walking state before the push")
+    parser.add_argument("--fall-check", action="store_true",
+                        help="run every episode to the ground (inclination 85 deg or base 0.1 m) or to 3 s after the "
+                             "push, capture off; fall_rule.py checks the fall rule and the capture hold on it")
     parser.add_argument("--speed", type=float, default=1.0,
                         help="x real time; an episode whose loop misses control ticks is discarded")
     parser.add_argument("--no-rviz", action="store_true")
@@ -130,6 +148,9 @@ if __name__ == '__main__':
     world_name = 'rl_flat.world'
     p.state_estimation = 'ground_truth'  # 'odometry','imu', 'pronto', 'ground_truth' (only sim)
     rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=True,debug=False, policy="velocity")
+    p.dm.record_from_push_start = args.from_push_start
+    if args.fall_check:
+        p.dm.INCLINATION_THRESHOLD, p.dm.FALL_HEIGHT_THRESHOLD, p.dm.capture = 85.0, 0.1, False
     if args.filter is not None:
         from base_controllers.components.safe_rl.value_function import value_function_manager as vfm
         p.dm.value_function = vfm.ValueFunctionManager(

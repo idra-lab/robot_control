@@ -15,7 +15,8 @@ ROBOT_SETTINGS = {
 
 # the episodes CSV written next to a dataset, one row per episode (README.md)
 EPISODE_COLUMNS = ("episode", "cmd_vx", "cmd_vy", "cmd_wz", "push_time", "kick", "kick_dir", "base_vx", "base_vy",
-                   "fallen", "captured", "survived", "end_time", "switch_time", "overruns", "n_samples", "row", "discarded")
+                   "fallen", "captured", "survived", "end_time", "switch_time", "overruns", "max_incl", "min_height",
+                   "final_height", "cp_hold_max", "n_samples", "row", "discarded")
 
 
 class DatasetManager():
@@ -64,6 +65,13 @@ class DatasetManager():
             raise ValueError(f"no dataset settings for {quadruped.robot_name}: add it to ROBOT_SETTINGS")
         for name, value in ROBOT_SETTINGS[quadruped.robot_name].items():
             setattr(self, name, value)
+        # False: capture never ends an episode (the run to the ground of --fall-check).  cp_hold_max,
+        # the longest the capture point stayed in CP_SAFE_RADIUS, counts until the robot first tilts
+        # past the fall rule's inclination, where an episode normally ends.
+        self.capture = True
+        self.capture_check_tilt = self.INCLINATION_THRESHOLD
+        # True: samples from the push start, with the walking state just before the push (test data)
+        self.record_from_push_start = False
         # None, or the safety filter (a ValueFunctionManager) as saferl_controller.py runs it: V at
         # vf_rate Hz from vf_from s on, and the safe policy at zero command while the filter says
         # so.  The same seed with and without it gives the same episodes (compare_filter.py).
@@ -103,11 +111,24 @@ class DatasetManager():
         cp = self.compute_capture_point(base_pos_xy, base_vel_xy, z_after)
         cp_local = cp - base_pos_xy
 
+        # after the push: the largest inclination, the lowest base, and how long the capture point
+        # stayed inside before the robot first tilted past the fall rule (fall_rule.py reads them)
+        ep, now = self.episode, float(np.ravel(self.quadruped.time)[0])
+        cp_inside = np.linalg.norm(cp_local) < self.CP_SAFE_RADIUS
+        if now >= self.warmup_time:
+            ep["max_incl"] = max(ep["max_incl"], inclination_after)
+            ep["min_height"] = min(ep["min_height"], float(z_after))
+            ep["tilted"] = ep["tilted"] or inclination_after > self.capture_check_tilt
+        if cp_inside and now >= self.capture_from and not ep["tilted"]:
+            self.cp_run_from = now if self.cp_run_from is None else self.cp_run_from
+            ep["cp_hold_max"] = max(ep["cp_hold_max"], now - self.cp_run_from)
+        else:
+            self.cp_run_from = None
+
         # when self.capture_flag = 1 it means we are stable: the capture point within CP_SAFE_RADIUS
         # for CAPTURE_HOLD s.  A single tick inside is not enough, the base can be momentarily still
         # while the robot tips over its feet.
-        if np.linalg.norm(
-                cp_local) < self.CP_SAFE_RADIUS and self.quadruped.time >= self.capture_from and self.fallen_flag == 0:
+        if self.capture and cp_inside and self.quadruped.time >= self.capture_from and self.fallen_flag == 0:
             if self.cp_inside_since is None:
                 self.cp_inside_since = self.quadruped.time
             if self.quadruped.time - self.cp_inside_since >= self.CAPTURE_HOLD - 1e-6:
@@ -199,6 +220,7 @@ class DatasetManager():
         self.capture_flag = 0
         self.survived_flag = 0
         self.cp_inside_since = None
+        self.cp_run_from = None
         self.observations = []
         self.obs_t_ = []
         self.obs_tp1_ = []
@@ -213,7 +235,7 @@ class DatasetManager():
         # the torque noise starts with the push, the samples once it is over
         self.warmup_time = push_time
         self.capture_from = push_time + self.push_duration
-        self.record_from = self.capture_from
+        self.record_from = push_time if self.record_from_push_start else self.capture_from
         self.end_time = self.capture_from + self.post_push_time
         backup_time = np.inf if self.backup_delay is None else push_time + self.backup_delay
         print(f"Nominal policy velocity command {actor_network.velocity_cmd}, push at {push_time} s, "
@@ -221,7 +243,8 @@ class DatasetManager():
         # what the episode was, saved with the dataset for dataset_statistics.py
         self.episode = {"cmd": actor_network.velocity_cmd.copy(), "push_time": push_time, "kick": kick,
                         "kick_dir": kick_dir, "base_vel": np.full(2, np.nan), "fell_before_push": False,
-                        "switch_time": np.nan, "overruns": 0}
+                        "switch_time": np.nan, "overruns": 0, "max_incl": 0.0, "min_height": np.inf,
+                        "tilted": False, "cp_hold_max": -1.0}
         nominal = True
         vf_every = int(round(1.0 / (self.vf_rate * robot.dt)))
         self.vis_every = int(round(1.0 / (30 * robot.dt)))
@@ -301,6 +324,7 @@ class DatasetManager():
                 robot.ros_pub.publishVisual(delete_markers=True)
 
         self.episode["ticks"] = self.step + 1
+        self.episode["final_height"] = float(robot.basePoseW[2])
         return np.array(self.observations), self.fallen_flag, self.capture_flag, self.survived_flag
 
     # -------------------------------
@@ -351,7 +375,7 @@ class DatasetManager():
                        captured=captured, survived=survived, end_time=float(np.ravel(self.quadruped.time)[0]),
                        n_samples=len(obs), row=len(all_obs), discarded=0)
             row.update(zip(("cmd_vx", "cmd_vy", "cmd_wz"), ep["cmd"]), base_vx=ep["base_vel"][0], base_vy=ep["base_vel"][1])
-            row.update((k, ep[k]) for k in ("switch_time", "overruns"))
+            row.update((k, ep[k]) for k in ("switch_time", "overruns", "max_incl", "min_height", "final_height", "cp_hold_max"))
             episodes.append(row)
             if ep["fell_before_push"] or not len(obs):
                 row.update(row=-1, discarded=2)
@@ -389,8 +413,9 @@ class DatasetManager():
         np.save(os.path.join(save_path, "observations_dataset_abs_test.npy"), padded_obs)
         # row indexes the dataset's first axis (-1: discarded); kick_dir and base velocity at the push
         # in the base frame; switch_time: s after the push start that the safety filter (if any) first
-        # chose the safe policy, nan if never; overruns: control ticks the loop missed; discarded 1:
-        # joint range, 2: fell before the push or no sample recorded, 3: over 1 % of the ticks missed
+        # chose the safe policy, nan if never; overruns: control ticks the loop missed; max_incl (deg),
+        # min_height (m) after the push; cp_hold_max (s, -1: never inside); discarded 1: joint range, 2: fell before the
+        # push or no sample recorded, 3: over 1 % of the ticks missed
         np.savetxt(os.path.join(save_path, "observations_dataset_abs_test_episodes.csv"),
                    np.array([[row[c] for c in EPISODE_COLUMNS] for row in episodes], dtype=float),
                    delimiter=",", fmt="%.6g", comments="", header=",".join(EPISODE_COLUMNS))
