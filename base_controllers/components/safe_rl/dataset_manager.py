@@ -111,8 +111,10 @@ class DatasetManager():
             # push survived for post_push_time
             success = float(self.capture_flag or self.survived_flag)
             full_obs = np.concatenate([self.obs_t_, self.obs_tp1_, [float(self.fallen_flag), success]])
-            # collect data from the push on (the = ensures at least one sample is collected before break)
-            if self.quadruped.time >= self.warmup_time:
+            # collect data from the end of the push on: V of a state is whether the robot recovers
+            # from it with no further push.  Recorded from the push start, a walking state about to
+            # be pushed carried the push's outcome, and walking itself was learnt as unsafe.
+            if self.quadruped.time >= self.record_from:
                 self.observations.append(full_obs)
 
             # store last observation
@@ -170,9 +172,10 @@ class DatasetManager():
         push_time = round(push_step * robot.dt, 4)
         kick = np.random.uniform(*self.kick_range)
         kick_dir = np.random.uniform(-np.pi, np.pi)  # base frame, 0 forward, pi/2 left
-        # samples are recorded from the push on
+        # the torque noise starts with the push, the samples once it is over
         self.warmup_time = push_time
         self.capture_from = push_time + self.push_duration
+        self.record_from = self.capture_from
         self.end_time = self.capture_from + self.post_push_time
         backup_time = np.inf if self.backup_delay is None else push_time + self.backup_delay
         print(f"Nominal policy velocity command {actor_network.velocity_cmd}, push at {push_time} s, "
@@ -254,7 +257,6 @@ class DatasetManager():
         q_reset = np.array(actor_network.q_def, dtype=np.float64)
         base_pose = np.array([0, 0, self.quadruped.standingHeight(q_reset) + 0.03, 0., 0., 0.])
 
-        n_obs_data = n_episodes
         for i in (range(n_episodes)):
             print(colored(f"Simulation {i}-----------------------", "blue"))
             # -------------------------------
@@ -275,35 +277,19 @@ class DatasetManager():
                                                                          noise_std=noise_std)
             print(colored(f"Fallen {fallen}, Captured {captured}, Survived {survived}", "green"))
             if not len(obs):  # fell before the push: nothing recorded
-                n_obs_data -= 1
                 continue
-            #print('obs', obs)
-            if fallen and len(obs) > 10:
-                n_obs_data += 1
-                obs_fall = obs[-10:]
-                obs_no_fall = obs[:-10]
-
-                #print('obs_fall', obs_fall)
-                #print('obs_no_fall', obs_no_fall)
-                all_obs.append(obs_fall)
-                all_obs.append(obs_no_fall)
-
-                max_len = max(max_len, len(obs_fall))
-                max_len = max(max_len, len(obs_no_fall))
-
-            else:
-                all_obs.append(obs)
-
-                # debug
-                # print(obs.shape)
-
-                max_len = max(max_len, len(obs))
-
+            # the episode is one row, from the push end to the episode end, the fall labelled on the last sample:
+            # through the TD target every state of a falling episode learns that it leads there
+            all_obs.append(obs)
+            max_len = max(max_len, len(obs))
             stats.append((fallen, captured, survived, len(obs)))
 
+        if not all_obs:
+            print(colored("No episode kept, nothing saved", "red"))
+            return
         # Pad observation arrays to same length in case of early termination (com comverget to cop)
         obs_dim = all_obs[0].shape[1]
-        padded_obs = np.zeros((n_obs_data, max_len, obs_dim), dtype=np.float32)
+        padded_obs = np.zeros((len(all_obs), max_len, obs_dim), dtype=np.float32)
 
         for i, episode in enumerate(all_obs):
             padded_obs[i, :len(episode), :] = episode
