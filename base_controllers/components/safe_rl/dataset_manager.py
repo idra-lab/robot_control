@@ -15,7 +15,7 @@ ROBOT_SETTINGS = {
 
 # the episodes CSV written next to a dataset, one row per episode (README.md)
 EPISODE_COLUMNS = ("episode", "cmd_vx", "cmd_vy", "cmd_wz", "push_time", "kick", "kick_dir", "base_vx", "base_vy",
-                   "fallen", "captured", "survived", "end_time", "overruns", "n_samples", "row", "discarded")
+                   "fallen", "captured", "survived", "end_time", "switch_time", "overruns", "n_samples", "row", "discarded")
 
 
 class DatasetManager():
@@ -64,6 +64,12 @@ class DatasetManager():
             raise ValueError(f"no dataset settings for {quadruped.robot_name}: add it to ROBOT_SETTINGS")
         for name, value in ROBOT_SETTINGS[quadruped.robot_name].items():
             setattr(self, name, value)
+        # None, or the safety filter (a ValueFunctionManager) as saferl_controller.py runs it: V at
+        # vf_rate Hz from vf_from s on, and the safe policy at zero command while the filter says
+        # so.  The same seed with and without it gives the same episodes (compare_filter.py).
+        self.value_function = None
+        self.vf_rate = 100.0
+        self.vf_from = 1.0
         self.episode = {}
 
     # -------------------------------
@@ -197,7 +203,8 @@ class DatasetManager():
         self.obs_t_ = []
         self.obs_tp1_ = []
 
-        actor_network.velocity_cmd = self.sample_command()
+        cmd = self.sample_command()
+        actor_network.velocity_cmd = cmd.copy()
         # the push, on the control tick grid
         push_step = int(round(np.random.uniform(*self.push_window) / robot.dt))
         push_time = round(push_step * robot.dt, 4)
@@ -214,8 +221,12 @@ class DatasetManager():
         # what the episode was, saved with the dataset for dataset_statistics.py
         self.episode = {"cmd": actor_network.velocity_cmd.copy(), "push_time": push_time, "kick": kick,
                         "kick_dir": kick_dir, "base_vel": np.full(2, np.nan), "fell_before_push": False,
-                        "overruns": 0}
+                        "switch_time": np.nan, "overruns": 0}
+        nominal = True
+        vf_every = int(round(1.0 / (self.vf_rate * robot.dt)))
         self.vis_every = int(round(1.0 / (30 * robot.dt)))
+        if self.value_function is not None:
+            self.value_function.reset()
 
         max_steps = int(round(self.end_time / robot.dt)) + 2 * int(self.decimation)
         last_tick = None
@@ -247,9 +258,16 @@ class DatasetManager():
             ang_vel_b = robot.b_R_w.dot(robot.baseTwistW[3:6])
             proj_gravity = robot.b_R_w.dot(np.array([0, 0, -1]))
 
-            if robot.time < backup_time:  # nominal policy
+            # the safety filter; switch_time is when it first chose the safe policy, after the push
+            if self.value_function is not None and robot.time >= self.vf_from and self.step % vf_every == 0:
+                nominal, _ = self.value_function.computeValueFnc(proj_gravity, ang_vel_b, robot.q, robot.qd)
+                if not nominal and np.isnan(self.episode["switch_time"]):
+                    self.episode["switch_time"] = float(np.ravel(robot.time)[0]) - push_time
+
+            if robot.time < backup_time and nominal:  # nominal policy
                 if np.mod(robot.time, 0.5) == 0:
                     print(colored(f"TIME: {robot.time}", "blue"))
+                actor_network.velocity_cmd = cmd
                 robot.q_des = actor_network.action(lin_acc_b, lin_vel_b, ang_vel_b, proj_gravity,
                                                    robot.q, robot.qd, policy_type="default")
             else:  # switch to backup policy
@@ -295,9 +313,6 @@ class DatasetManager():
         episodes = []  # one row per episode, saved next to the dataset
         max_len = 0
 
-        if seed is not None:
-            np.random.seed(seed)
-
         print("Running batch simulations...")
         # joint readings must stay in the robot's range, on the branch its encoders report: a reading
         # 2 pi off (a wrapped joint) would put states in the dataset the real robot never shows.
@@ -310,6 +325,10 @@ class DatasetManager():
 
         for i in (range(n_episodes)):
             print(colored(f"Simulation {i}-----------------------", "blue"))
+            # each episode is seeded by (seed, its index): runs with the same seed see the same
+            # commands and pushes, e.g. with and without the safety filter
+            if seed is not None:
+                np.random.seed([seed, i])
             # -------------------------------
             # Reset base
             # -------------------------------
@@ -332,7 +351,7 @@ class DatasetManager():
                        captured=captured, survived=survived, end_time=float(np.ravel(self.quadruped.time)[0]),
                        n_samples=len(obs), row=len(all_obs), discarded=0)
             row.update(zip(("cmd_vx", "cmd_vy", "cmd_wz"), ep["cmd"]), base_vx=ep["base_vel"][0], base_vy=ep["base_vel"][1])
-            row.update((k, ep[k]) for k in ("overruns",))
+            row.update((k, ep[k]) for k in ("switch_time", "overruns"))
             episodes.append(row)
             if ep["fell_before_push"] or not len(obs):
                 row.update(row=-1, discarded=2)
@@ -369,8 +388,9 @@ class DatasetManager():
 
         np.save(os.path.join(save_path, "observations_dataset_abs_test.npy"), padded_obs)
         # row indexes the dataset's first axis (-1: discarded); kick_dir and base velocity at the push
-        # in the base frame; overruns: control ticks the loop missed; discarded 1: joint range, 2: fell
-        # before the push or no sample recorded, 3: over 1 % of the ticks missed
+        # in the base frame; switch_time: s after the push start that the safety filter (if any) first
+        # chose the safe policy, nan if never; overruns: control ticks the loop missed; discarded 1:
+        # joint range, 2: fell before the push or no sample recorded, 3: over 1 % of the ticks missed
         np.savetxt(os.path.join(save_path, "observations_dataset_abs_test_episodes.csv"),
                    np.array([[row[c] for c in EPISODE_COLUMNS] for row in episodes], dtype=float),
                    delimiter=",", fmt="%.6g", comments="", header=",".join(EPISODE_COLUMNS))

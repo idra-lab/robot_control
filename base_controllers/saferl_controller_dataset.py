@@ -113,10 +113,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Push episodes for the safety value function (components/safe_rl/README.md)")
     parser.add_argument("--robot", default="aliengo", choices=sorted(ROBOT_SETTINGS))
     parser.add_argument("--episodes", type=int, default=100)
-    parser.add_argument("--seed", type=int, default=None, help="default: the clock")
+    parser.add_argument("--seed", type=int, default=None, help="default: the clock; the same seed gives the same commands and pushes")
     parser.add_argument("--out", default=None, help="folder for observations_dataset_abs_test.npy and its _episodes.csv "
                         "(default components/safe_rl/value_function/observation_datasets/<robot>)")
     parser.add_argument("--noise", type=float, default=10.0, help="torque noise std from the push on, Nm per joint and tick")
+    parser.add_argument("--filter", nargs="?", const="default", default=None, metavar="MODEL",
+                        help="run the safety filter (default model: models/VF_push_end_<robot>.onnx)")
+    parser.add_argument("--threshold", type=float, default=None, help="safety filter threshold (default per robot)")
     parser.add_argument("--speed", type=float, default=1.0,
                         help="x real time; an episode whose loop misses control ticks is discarded")
     parser.add_argument("--no-rviz", action="store_true")
@@ -127,6 +130,10 @@ if __name__ == '__main__':
     world_name = 'rl_flat.world'
     p.state_estimation = 'ground_truth'  # 'odometry','imu', 'pronto', 'ground_truth' (only sim)
     rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=True,debug=False, policy="velocity")
+    if args.filter is not None:
+        from base_controllers.components.safe_rl.value_function import value_function_manager as vfm
+        p.dm.value_function = vfm.ValueFunctionManager(
+            robot_name=args.robot, model_path=None if args.filter == "default" else args.filter, threshold=args.threshold)
 
     try:
         # rl_flat.world, as the RL controller (rl_quadruped) runs the policy: no 1 mm contact
