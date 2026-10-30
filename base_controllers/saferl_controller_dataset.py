@@ -6,6 +6,7 @@ Created on Fri Nov  2 16:52:08 2018
 """
 
 from __future__ import print_function
+import argparse
 import rospy as ros
 from base_controllers.utils.math_tools import *
 np.set_printoptions(threshold=np.inf, precision=5, linewidth=1000, suppress=True)
@@ -109,9 +110,18 @@ class SafeRLControllerDataset(QuadrupedController):
         self.reset_world(req)
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Push episodes for the safety value function (components/safe_rl/README.md)")
+    parser.add_argument("--episodes", type=int, default=100)
+    parser.add_argument("--seed", type=int, default=None, help="default: the clock")
+    parser.add_argument("--out", default="components/safe_rl/value_function/observation_datasets",
+                        help="folder for observations_dataset_abs_test.npy and its _episodes.csv")
+    parser.add_argument("--noise", type=float, default=10.0, help="torque noise std from the push on, Nm per joint and tick")
+    parser.add_argument("--no-rviz", action="store_true")
+    parser.add_argument("--gui", action="store_true", help="Gazebo GUI")
+    args = parser.parse_args()
+
     p = SafeRLControllerDataset('aliengo')
     world_name = 'rl_flat.world'
-    use_gui=False
     p.state_estimation = 'ground_truth'  # 'odometry','imu', 'pronto', 'ground_truth' (only sim)
     rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=True,debug=False, policy="velocity")
 
@@ -121,7 +131,7 @@ if __name__ == '__main__':
         # and the dataset does not use contacts.
         p.startController(world_name=world_name,
                           use_ground_truth_contacts=False,
-                          additional_args=['gui:=' + str(use_gui),'rviz:=true'])
+                          additional_args=['gui:=' + str(args.gui), 'rviz:=' + str(not args.no_rviz).lower()])
 
         p.pid = PidManager(p.joint_names)
         # RlVelocityController sets no gains itself: the dataset manager puts the policy's kp, kd
@@ -131,16 +141,9 @@ if __name__ == '__main__':
         p.slowDown(max_update_rate=200)
         # the episode (command range, push, horizon, backup policy) is set by DatasetManager's
         # attributes, e.g. p.dm.kick_range = (0.0, 3.0)
-        p.dm.run_batch_simulations(rl_controller, n_episodes=100, save_path="components/safe_rl/value_function/observation_datasets", noise_std=10.0, seed = int(time.time()))
+        p.dm.run_batch_simulations(rl_controller, n_episodes=args.episodes, save_path=args.out, noise_std=args.noise,
+                                   seed=int(time.time()) if args.seed is None else args.seed)
 
     except (ros.ROSInterruptException, ros.service.ServiceException):
         ros.signal_shutdown("killed")
         p.deregister_node()
-
-    # if conf.plotting:
-    #     plotJoint('position', time_log=p.time_log, q_log=p.q_log, q_des_log=p.q_des_log, sharex=True, sharey=False,
-    #               start=0, end=-1)
-    #     plotFrame('position', time_log=p.time_log, des_Pose_log=p.basePoseW_des_log, Pose_log=p.basePoseW_log,
-    #               title='Base', frame='W', sharex=True, sharey=False, start=0, end=-1)
-    #     plotFrame('velocity', time_log=p.time_log, des_Twist_log=p.baseTwistW_des_log, Twist_log=p.baseTwistW_log,
-    #               title='Base', frame='W', sharex=True, sharey=False, start=0, end=-1)
