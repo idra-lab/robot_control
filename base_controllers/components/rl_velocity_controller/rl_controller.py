@@ -1,5 +1,7 @@
 """Velocity policy runner for :mod:`quadruped_controller`.
 
+@author: riccardobussola
+
 Two policy families are supported behind one interface:
 
 ``policy="legacy"`` (the default, and byte-for-byte the original behaviour)
@@ -112,6 +114,18 @@ class RlVelocityController():
         self.decimation_counter = 0
         self.history_buffer = np.zeros((1, 3, 48))
         
+    def reset(self):
+        """Start a new episode, as after a robot reset: no observation history, previous action or
+        decimation phase carries over.  With policy='velocity' the next action() seeds the history
+        from the measurements it is given, as an Isaac Lab reset does."""
+        self.q_des = np.array(self.q_def, dtype=np.float64)
+        self.decimation_counter = 0
+        if self.policy_family == VELOCITY:
+            self._velocity_started = False
+            return
+        self.prev_action = np.zeros(12)
+        self.history_buffer = np.zeros((1, 3, 48))
+
     def action(self, base_lin_acc, base_lin_vel, base_ang_vel, pj_gravity, q, qd, policy_type='default'):
 
         if self.policy_family == VELOCITY:
@@ -253,8 +267,7 @@ class RlVelocityController():
 
         self.policy.select(variant)
         if not self._velocity_started:
-            # The history has to be seeded before the first inference, and this class has no reset
-            # hook of its own, so it happens on the first call.
+            # The history is seeded on the first call after construction or reset().
             self.policy.reset(q, qd, base_lin_acc, base_ang_vel, pj_gravity,
                               velocity_cmd=self.velocity_cmd)
             self._velocity_started = True
