@@ -3,6 +3,11 @@ import os
 from termcolor import colored
 
 
+# the episodes CSV written next to a dataset, one row per episode (README.md)
+EPISODE_COLUMNS = ("episode", "cmd_vx", "cmd_vy", "cmd_wz", "push_time", "kick", "kick_dir", "base_vx", "base_vy",
+                   "fallen", "captured", "survived", "end_time", "n_samples", "row", "discarded")
+
+
 class DatasetManager():
     def __init__(self, quadruped=None):
 
@@ -47,6 +52,7 @@ class DatasetManager():
         # None: the walking policy throughout.  Else the safe policy takes over, at zero command,
         # backup_delay s after the push starts.
         self.backup_delay = None
+        self.episode = {}
 
     # -------------------------------
     # Capture Point Computation
@@ -148,6 +154,12 @@ class DatasetManager():
         print(colored("The reset robot did not settle; starting anyway", "red"))
         return False
 
+    def joint_range(self):
+        """Position limits of the joints, in the order of quadruped.q."""
+        model = self.quadruped.robot.model
+        idx = [model.idx_qs[model.getJointId(name)] for name in self.quadruped.joint_names]
+        return model.lowerPositionLimit[idx], model.upperPositionLimit[idx]
+
     def sample_command(self):
         """A velocity command (vx, vy, wz) drawn as in the walking policy's training."""
         cmd = np.random.uniform(-self.cmd_range, self.cmd_range)
@@ -185,6 +197,9 @@ class DatasetManager():
         backup_time = np.inf if self.backup_delay is None else push_time + self.backup_delay
         print(f"Nominal policy velocity command {actor_network.velocity_cmd}, push at {push_time} s, "
               f"kick {kick:.2f} m/s at {np.degrees(kick_dir):.0f} deg")
+        # what the episode was, saved with the dataset for dataset_statistics.py
+        self.episode = {"cmd": actor_network.velocity_cmd.copy(), "push_time": push_time, "kick": kick,
+                        "kick_dir": kick_dir, "base_vel": np.full(2, np.nan), "fell_before_push": False}
 
         max_steps = int(round(self.end_time / robot.dt)) + 2 * int(self.decimation)
         for self.step in range(max_steps):
@@ -192,6 +207,7 @@ class DatasetManager():
             terminate = self.check_termination()
             if self.fallen_flag and self.step < push_step:
                 print(colored(f"Fallen at {robot.time} s, before the push", "red"))
+                self.episode["fell_before_push"] = True
                 break
             self.store_observations()
             # Stop at a fall, capture or survival, on a sample so that it carries the label
@@ -203,6 +219,7 @@ class DatasetManager():
                 yaw = robot.basePoseW[5]
                 force = robot.robot.robotMass * kick / self.push_duration
                 robot.push(force * np.array([np.cos(yaw + kick_dir), np.sin(yaw + kick_dir)]), self.push_duration)
+                self.episode["base_vel"] = (robot.b_R_w @ robot.baseTwistW[:3])[:2]
                 print(f"Pushing robot at {push_time} s: {force:.0f} N for {self.push_duration} s")
 
             # -------------------------------
@@ -251,12 +268,17 @@ class DatasetManager():
         os.makedirs(save_path, exist_ok=True)
         all_obs = []
         stats = []
+        episodes = []  # one row per episode, saved next to the dataset
         max_len = 0
 
         if seed is not None:
             np.random.seed(seed)
 
         print("Running batch simulations...")
+        # joint readings must stay in the robot's range, on the branch its encoders report: a reading
+        # 2 pi off (a wrapped joint) would put states in the dataset the real robot never shows.
+        # 0.5 rad of slack covers the soft joint stops overshooting in a hard fall.
+        q_lower, q_upper = self.joint_range()
         # every episode starts standing still in the policy's default posture, feet 3 mm above the
         # ground (standingHeight is to the foot centres)
         q_reset = np.array(actor_network.q_def, dtype=np.float64)
@@ -281,7 +303,20 @@ class DatasetManager():
             obs, fallen, captured, survived = self.run_single_simulation(actor_network=actor_network,
                                                                          noise_std=noise_std)
             print(colored(f"Fallen {fallen}, Captured {captured}, Survived {survived}", "green"))
-            if not len(obs):  # fell before the push: nothing recorded
+            ep = self.episode
+            row = dict(episode=i, push_time=ep["push_time"], kick=ep["kick"], kick_dir=ep["kick_dir"], fallen=fallen,
+                       captured=captured, survived=survived, end_time=float(np.ravel(self.quadruped.time)[0]),
+                       n_samples=len(obs), row=len(all_obs), discarded=0)
+            row.update(zip(("cmd_vx", "cmd_vy", "cmd_wz"), ep["cmd"]), base_vx=ep["base_vel"][0], base_vy=ep["base_vel"][1])
+            episodes.append(row)
+            if ep["fell_before_push"] or not len(obs):
+                row.update(row=-1, discarded=2)
+                continue
+            q = np.concatenate([obs[:, 6:18], obs[:, 36:48]])
+            if np.any(q < q_lower - 0.5) or np.any(q > q_upper + 0.5):
+                print(colored(f"Simulation {i}: joint positions outside the joint range, episode "
+                              f"discarded", "red"))
+                row.update(row=-1, discarded=1)
                 continue
             # the episode is one row, from the push end to the episode end, the fall labelled on the last sample:
             # through the TD target every state of a falling episode learns that it leads there
@@ -302,6 +337,11 @@ class DatasetManager():
         stats = np.array(stats, dtype=int)
 
         np.save(os.path.join(save_path, "observations_dataset_abs_test.npy"), padded_obs)
+        # row indexes the dataset's first axis (-1: discarded); kick_dir and base velocity at the push
+        # in the base frame; discarded 1: joint range, 2: fell before the push or no sample recorded
+        np.savetxt(os.path.join(save_path, "observations_dataset_abs_test_episodes.csv"),
+                   np.array([[row[c] for c in EPISODE_COLUMNS] for row in episodes], dtype=float),
+                   delimiter=",", fmt="%.6g", comments="", header=",".join(EPISODE_COLUMNS))
 
         print(f"Episodi completati: {n_episodes}")
         print(f"Caduti: {np.sum(stats[:, 0])}, CP raggiunto: {np.sum(stats[:, 1])}, "
