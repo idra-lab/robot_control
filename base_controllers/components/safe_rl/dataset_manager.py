@@ -10,10 +10,15 @@ class DatasetManager():
         # -------------------------------
         # Simulation Thresholds and Constants
         # -------------------------------
-        self.INCLINATION_THRESHOLD = 30.0  # degrees - max allowed inclination before considering robot as fallen
+        # Run to the ground (320 pushed episodes), the walking policy recovered from at most 29 deg of
+        # inclination with the base above 0.27 m, and every fall went past 64 deg, ending on its side or
+        # its belly (base at 0.11 m).  The thresholds sit in those gaps.
+        self.INCLINATION_THRESHOLD = 45.0  # degrees - max allowed inclination before considering robot as fallen
         self.FALL_HEIGHT_THRESHOLD = 0.2  # meters - min allowed height before considering robot as fallen
         self.CP_SAFE_RADIUS = 0.05  # meters - acceptable radius to consider CP successful
-        self.CAPTURE_HOLD = 0.2  # s the capture point has to stay in that radius
+        # s the capture point has to stay in that radius: a robot can stand still for 0.2 s on its
+        # feet and then fall (2 of 91 captures at 0.2 s, none of 54 at 0.5 s)
+        self.CAPTURE_HOLD = 0.5
         self.G = 9.81  # gravitational constant
         self.policy_frequency = 50  # Hz
         self.decimation = (1 / self.quadruped.dt) * (1 / self.policy_frequency)
