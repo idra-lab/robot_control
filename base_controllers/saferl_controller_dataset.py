@@ -16,6 +16,7 @@ from base_controllers.utils.pidManager import PidManager
 from gazebo_msgs.srv import GetModelState
 from gazebo_msgs.srv import SetModelStateRequest
 from gazebo_msgs.msg import ModelState
+from geometry_msgs.msg import Point, Wrench
 import numpy as np
 import pinocchio as pin
 import time
@@ -63,7 +64,22 @@ class SafeRLControllerDataset(QuadrupedController):
         pin.updateFramePlacements(self.robot.model, self.robot.data)
         return -np.mean([self.robot.data.oMf[i].translation[2] for i in self.robot.getEndEffectorsFrameId])
 
+    def push(self, force_xy, duration):
+        """A horizontal force on the base, in the world frame, for duration s from now: the push of
+        the push benchmark (rl_quadruped/push_sweep.py).  A push sets no velocity, so the joint
+        velocities and the base rotation are left as they are; setting the model twist would set
+        them on every link."""
+        wrench = Wrench()
+        wrench.force.x, wrench.force.y = force_xy
+        response = self.apply_body_wrench(body_name=self.robot_name + "::base_link", reference_frame="world",
+                                          reference_point=Point(), wrench=wrench, start_time=ros.Time(0),
+                                          duration=ros.Duration(duration))
+        if not response.success:
+            raise RuntimeError(f"push refused: {response.status_message}")
+
     def setBaseTwist(self, baseTwist=np.zeros(6)):
+        # Gazebo sets this twist on every link of the model, so the joint velocities go to zero:
+        # not a push, use push()
         current = self.get_state(self.robot_name, "")
         req = SetModelStateRequest()
         model_state = ModelState()

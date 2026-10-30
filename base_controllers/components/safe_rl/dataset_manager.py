@@ -26,6 +26,14 @@ class DatasetManager():
         self.cmd_range = np.array([0.5, 0.5, 0.5])
         self.rel_standing = 0.1
         self.rel_yaw_only = 0.1
+        # The push starts at a time uniform in push_window, s after the policy starts: the gait has
+        # settled by then (~1 s) and the window randomises its phase.  It is the push benchmark's
+        # (rl_quadruped/push_sweep.py), so kicks compare with its k50: a horizontal force of
+        # robot mass x kick / push_duration on the base for push_duration s, the kick uniform in
+        # kick_range m/s, the direction uniform in the base frame.
+        self.push_window = (2.0, 3.0)
+        self.kick_range = (0.0, 3.0)
+        self.push_duration = 0.2
 
     # -------------------------------
     # Capture Point Computation
@@ -126,7 +134,7 @@ class DatasetManager():
     # -------------------------------
     # Main Function: Single Simulation Episode
     # -------------------------------
-    def run_single_simulation(self, actor_network, max_steps=8000, noise_std=1.0, warmup_time=1.0):
+    def run_single_simulation(self, actor_network, max_steps=8000, noise_std=1.0):
         # init vars
         self.fallen_flag = 0
         self.capture_flag = 0
@@ -135,28 +143,34 @@ class DatasetManager():
         self.obs_t_ = []
         self.obs_tp1_ = []
 
-        # reset robot
-        self.warmup_time = warmup_time
         actor_network.velocity_cmd = self.sample_command()
-        print(f"Nominal policy velocity command {actor_network.velocity_cmd}")
-        # generate push instant
-        low = warmup_time - 0.5
-        high = warmup_time
-        n_steps = int((high - low) / self.quadruped.dt)
-        push_instant = round(low + np.random.randint(0, n_steps + 1) * self.quadruped.dt, 3)
+        # the push, on the control tick grid
+        push_step = int(round(np.random.uniform(*self.push_window) / self.quadruped.dt))
+        push_time = round(push_step * self.quadruped.dt, 4)
+        kick = np.random.uniform(*self.kick_range)
+        kick_dir = np.random.uniform(-np.pi, np.pi)  # base frame, 0 forward, pi/2 left
+        # samples are recorded from the push on
+        self.warmup_time = push_time
+        print(f"Nominal policy velocity command {actor_network.velocity_cmd}, push at {push_time} s, "
+              f"kick {kick:.2f} m/s at {np.degrees(kick_dir):.0f} deg")
 
-       # while self.quadruped.basePoseW[2] < 0.35 or self.quadruped.basePoseW[2] > 0.37:
-       #     self.quadruped.updateKinematics()
         for self.step in range(max_steps):
             self.quadruped.updateKinematics()
             terminate = self.check_termination()
             self.store_observations()
-            if self.quadruped.time > warmup_time:
+            if self.quadruped.time > self.warmup_time:
                 # Stop if CP was reached successfully
                 if terminate and self.step % self.decimation == 0:
                     # print('terminate', self.capture_flag)
                     print(f"Termination at {self.quadruped.time}")
                     break
+
+            if self.step == push_step:
+                yaw = self.quadruped.basePoseW[5]
+                force = self.quadruped.robot.robotMass * kick / self.push_duration
+                self.quadruped.push(force * np.array([np.cos(yaw + kick_dir), np.sin(yaw + kick_dir)]),
+                                    self.push_duration)
+                print(f"Pushing robot at {push_time} s: {force:.0f} N for {self.push_duration} s")
             # -------------------------------
             # Observation and Action Computation
             # -------------------------------
@@ -172,21 +186,6 @@ class DatasetManager():
                 if np.mod(self.quadruped.time, 0.5) == 0:
                     print(colored(f"TIME: {self.quadruped.time}", "blue"))
 
-                # Apply external push randomly before warmup ends
-                if self.quadruped.time == push_instant:
-                    # apply as a wrench
-                    # Fx = np.random.uniform(-200.0, 300.0)
-                    # Fy = np.random.uniform(-150, 150)
-                    # self.quadruped.applyForce(Fx,0,0,0,0,0,self.quadruped.dt)  # push in x
-                    # self.quadruped.applyForce(0, Fy, 0, 0, 0, 0, self.quadruped.dt)  # push in y
-                    # apply as a twisch change
-                    vx = np.random.uniform(-3, 3)  # + self.quadruped.baseTwistW[0]
-                    vy = np.random.uniform(-3, 3)  # + self.quadruped.baseTwistW[1]
-                    # debug makes it fall
-                    # vx = -1.645
-                    # vy = -1.239
-                    print(f"Pushing robot at {push_instant} with twist  vx: {vx}, vy: {vy}")
-                    self.quadruped.setBaseTwist(baseTwist=np.array([vx, vy, 0, 0, 0, 0]))
                 self.quadruped.q_des = actor_network.action(lin_acc_b, lin_vel_b, ang_vel_b, proj_gravity,
                                                             self.quadruped.q, self.quadruped.qd, policy_type="default")
 
