@@ -112,8 +112,10 @@ class DatasetManager():
         if self.quadruped.time >= self.end_time - 1e-6 and self.fallen_flag == 0 and self.capture_flag == 0:
             self.survived_flag = 1
 
-        self.quadruped.ros_pub.add_marker(np.append(base_pos_xy, 0.), radius=0.1, color="blue")
-        self.quadruped.ros_pub.add_marker(np.append(cp, 0.), radius=0.1, color="red")
+        # base and capture point in rviz, at 30 Hz (published at the end of the tick)
+        if self.step % self.vis_every == 0:
+            self.quadruped.ros_pub.add_marker(np.append(base_pos_xy, 0.), radius=0.1, color="blue")
+            self.quadruped.ros_pub.add_marker(np.append(cp, 0.), radius=0.1, color="red")
         return self.capture_flag or self.survived_flag or self.fallen_flag
 
     def store_observations(self):
@@ -213,6 +215,7 @@ class DatasetManager():
         self.episode = {"cmd": actor_network.velocity_cmd.copy(), "push_time": push_time, "kick": kick,
                         "kick_dir": kick_dir, "base_vel": np.full(2, np.nan), "fell_before_push": False,
                         "overruns": 0}
+        self.vis_every = int(round(1.0 / (30 * robot.dt)))
 
         max_steps = int(round(self.end_time / robot.dt)) + 2 * int(self.decimation)
         last_tick = None
@@ -276,7 +279,8 @@ class DatasetManager():
                 self.episode["overruns"] += 1
             last_tick = tick
             robot.time = np.round(robot.time + robot.dt, 4)
-            robot.ros_pub.publishVisual(delete_markers=True)
+            if self.step % self.vis_every == 0:
+                robot.ros_pub.publishVisual(delete_markers=True)
 
         self.episode["ticks"] = self.step + 1
         return np.array(self.observations), self.fallen_flag, self.capture_flag, self.survived_flag
