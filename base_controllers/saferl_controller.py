@@ -3,247 +3,201 @@
 Created on Fri Nov  2 16:52:08 2018
 
 @author: mfocchi
+
+Gazebo test of the safety filter, to watch.  The walking policy walks at a command and the robot is
+pushed every push_period s, each kick of a growing list in turn to the left, right, front and back
+(the push of the dataset and of rl_quadruped/push_sweep.py).  The value function is evaluated at
+100 Hz (ValueFunctionManager); below its threshold the safe policy takes over at zero command, until
+V has been back above it for 2 s.  A robot that falls is reset and the run goes on.
+
+rviz shows V over the robot, green on the walking policy and red on the safe one, and each push as
+a blue arrow.  /safety_filter/value, /safety_filter/threshold and /safety_filter/backup carry them
+for rqt_plot (--plot starts it).  components/safe_rl/README.md has the whole pipeline.
+
+    python3 saferl_controller.py [--robot aliengo|go2] [--threshold 0.5] [--kicks 1,1.5,2,2.5,3] [--cmd 0.3,0,0] [--no-filter] [--speed 1] [--plot] [--gui]
 """
 
 from __future__ import print_function
+import argparse
+import subprocess
 import rospy as ros
 from base_controllers.utils.math_tools import *
-
 np.set_printoptions(threshold=np.inf, precision=5, linewidth=1000, suppress=True)
-from base_controllers.quadruped_controller import QuadrupedController
-from base_controllers.utils.common_functions import plotFrame, plotJoint
+from base_controllers.saferl_controller_dataset import SafeRLControllerDataset
 from base_controllers.components.rl_velocity_controller.rl_controller import RlVelocityController
-from base_controllers.components.safe_rl.value_function.value_function_manager import ValueFunctionManager
-from base_controllers.utils.common_functions import launchFileNode
-import params as conf
-import numpy as np
-import os
-from base_controllers.utils.joyManager import JoyManager
-robotName = "aliengo"  # needs to inherit BaseController
-from termcolor import colored
-from base_controllers.utils.rosbag_recorder import RosbagControlledRecorder
+from base_controllers.components.safe_rl.value_function import value_function_manager as vfm
+from base_controllers.utils.pidManager import PidManager
 from std_msgs.msg import Float32
-from geometry_msgs.msg import Vector3
-from base_controllers.utils.profiler import Profiler
+from termcolor import colored
+import numpy as np
 
-class SafeRLController(QuadrupedController):
+# the push directions, in turn, in the base frame
+DIRECTIONS = (("left", np.pi / 2), ("right", -np.pi / 2), ("forward", 0.0), ("backward", np.pi))
+
+
+class SafeRLController(SafeRLControllerDataset):
+    """The dataset's robot (reset, push, simulation speed), run with the safety filter."""
 
     def __init__(self, robot_name="myrobot"):
         super().__init__(robot_name=robot_name)
-        print("Initialized   controller---------------------------------------------------------------")
 
-    def initVars(self):
-        super().initVars()
-        self.q_des_q0 = conf.robot_params[self.robot_name]['q_0']
-        self.pub_vf = ros.Publisher("/value_function", Float32, queue_size=1, tcp_nodelay=True)
-        self.pub_rl_ref_vel = ros.Publisher("/rl_ref_vel", Vector3, queue_size=1, tcp_nodelay=True)
-        self.startPush = 0.
+    def startFilterTopics(self, threshold):
+        self.threshold = threshold
+        self.pub_value = ros.Publisher("/safety_filter/value", Float32, queue_size=1, tcp_nodelay=True)
+        self.pub_threshold = ros.Publisher("/safety_filter/threshold", Float32, queue_size=1, tcp_nodelay=True)
+        self.pub_backup = ros.Publisher("/safety_filter/backup", Float32, queue_size=1, tcp_nodelay=True)
 
-    def logData(self):
-        if (self.log_counter < conf.robot_params[self.robot_name]['buffer_size']):
-            ## add your logs here
-            pass
-        super().logData()
+    def publishFilter(self, V, backup):
+        self.pub_value.publish(Float32(V))
+        self.pub_threshold.publish(Float32(self.threshold))
+        self.pub_backup.publish(Float32(float(backup)))
+
+    def showFilter(self, V, backup, push_arrow=None):
+        """V over the robot, and the push if any (start, vector) in rviz.  The same markers every
+        tick, updated in place: deleting and re-adding them every tick makes them flicker."""
+        base = self.basePoseW[:3]
+        v = float(np.clip(V, 0.0, 1.0))
+        self.ros_pub.add_marker(base + np.array([0., 0., 0.3]), radius=0.1, color=np.array([1.0 - v, v, 0.0]), alpha=0.9)
+        text = f"V {v:.2f}  " + ("SAFE POLICY" if backup else "walking")
+        self.ros_pub.add_text(base + np.array([0., 0., 0.45]), text,
+                              color=np.array([1.0, 0.25, 0.2]) if backup else np.array([0.3, 1.0, 0.3]))
+        if push_arrow is None:   # the arrow stays, invisible
+            self.ros_pub.add_arrow(base, np.array([0., 0., 0.01]), "blue", alpha=0.0)
+        else:
+            self.ros_pub.add_arrow(push_arrow[0], push_arrow[1], "blue", scale=2.0)
+        self.ros_pub.publishVisual(delete_markers=False)
+
+
+def inclination(quaternion):
+    return np.degrees(2 * np.arcsin(np.sqrt(quaternion[0] ** 2 + quaternion[1] ** 2)))
 
 
 if __name__ == '__main__':
-    p = SafeRLController('aliengo')
-    world_name = 'fast.world'
-    use_gui=False#True
+    parser = argparse.ArgumentParser(description="Gazebo test of the safety filter")
+    parser.add_argument("--robot", default="aliengo", choices=sorted(vfm.DEFAULT_THRESHOLD))
+    parser.add_argument("--model", default=None, help="value function, ONNX (default models/VF_push_end_<robot>.onnx)")
+    parser.add_argument("--threshold", type=float, default=None, help="default per robot (value_function_manager.py)")
+    parser.add_argument("--no-filter", action="store_true", help="show V but never switch to the safe policy")
+    parser.add_argument("--kicks", default="1,1.5,2,2.5,3", help="m/s, each pushed in the 4 directions in turn")
+    parser.add_argument("--cmd", default="0.3,0,0", help="walking command vx,vy,wz (training range +-0.5)")
+    parser.add_argument("--push-period", type=float, default=4.0, help="s between pushes")
+    parser.add_argument("--speed", type=float, default=1.0, help="x real time")
+    parser.add_argument("--plot", action="store_true", help="start rqt_plot on the filter topics")
+    parser.add_argument("--gui", action="store_true", help="Gazebo GUI")
+    parser.add_argument("--no-rviz", action="store_true")
+    args = parser.parse_args()
+    kicks = [float(k) for k in args.kicks.split(",")]
+    pushes = [(kick, name, angle) for kick in kicks for name, angle in DIRECTIONS]
+    cmd = np.array([float(c) for c in args.cmd.split(",")])
+    first_push = 2.0  # s after a reset: the gait has settled
+    push_duration = 0.2
 
-    p.state_estimation = 'ground_truth'  # 'odometry','imu', 'pronto', 'ground_truth' (only sim)
-    # NOTE: in the RL controller, SE NN is used only if state estimation is not pronto
+    p = SafeRLController(args.robot)
+    p.state_estimation = 'ground_truth'
     rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=True, debug=False, policy="velocity")
-    p.SAVE_BAG = False  #
-    vf_frequency = 100  # Hz
-    vf_decimation = (1 / p.dt) / (vf_frequency)
-    step = 0
-    isrec = True
-    use_joy = False
-    sim_push = True
-    allow_push_not_rec = False
+    vf = vfm.ValueFunctionManager(robot_name=args.robot, model_path=args.model, threshold=args.threshold)
+    vf_every = int(round(0.01 / p.dt))  # 100 Hz
+    # the rviz markers at 30 Hz: rviz draws no faster, and every message it has to process slows it
+    vis_every = int(round(1.0 / (30 * p.dt)))
+    log = []  # per push: kick, direction, lowest V, switch time after the push, fell
 
-    if use_joy:
-        joy = JoyManager()
-
-    #load value function NN
-    vf = ValueFunctionManager()
     try:
-        # p.startController(world_name='slow.world')
-        p.startController(world_name=world_name,
-                          use_ground_truth_contacts=True,
-                          additional_args=['gui:=' + str(use_gui),
-                                           'go0_conf:=standDown',
-                                           'rviz:=true',
-                                           *(['task_period:=0.002'] if p.real_robot else [])])  # change task period for real robot
-        if p.SAVE_BAG:
-            p.recorder = RosbagControlledRecorder(topics='/aliengo/joint_states /aliengo/imu  /state_estimator_pronto/pose /state_estimator_pronto/twist /state_estimator_pronto/vel_raw /state_estimator_pronto/stance /value_function /qualisys/robot/pose /rl_ref_vel /tf /tf_static',
-                                                  bag_name="saferl.bag", record_from_startup_=False)
-            p.recorder.start_recording_srv()
+        # as the dataset: rl_flat.world, no ground truth contacts (they would force slow.world)
+        p.startController(world_name='rl_flat.world', use_ground_truth_contacts=False,
+                          additional_args=['gui:=' + str(args.gui), 'rviz:=' + str(not args.no_rviz).lower()])
+        p.pid = PidManager(p.joint_names)
+        # real time: the loop takes about 0.6 ms of the 2 ms control period (the overruns at the end
+        # tell if it kept up here)
+        p.setSpeed(args.speed)
+        p.startFilterTopics(vf.threshold)
+        if args.plot:
+            subprocess.Popen(["rqt_plot", "/safety_filter/value/data", "/safety_filter/threshold/data",
+                              "/safety_filter/backup/data"])
+        q_reset = np.array(rl_controller.q_def, dtype=np.float64)
+        base_pose = np.array([0, 0, p.standingHeight(q_reset) + 0.03, 0., 0., 0.])
 
-        p.startupProcedure()
-        # if p.state_estimation=='pronto':
-        #     launchFileNode("mocap_qualisys", "qualisys.launch")
-        #     launchFileNode("pronto_aliengo", "pronto_aliengo.launch", additional_args=['pronto_conf:='+p.pronto_config,
-        #                                                                                'use_sim_time:='+str(not p.real_robot)])
-        p.pid.setPDjoints(rl_controller.kp, rl_controller.kd, np.full(12, 0))
-        p.counter = 0
-        p.startTime = 0
-        time_push = p.startTime
-        #profiler = Profiler(function_name=vf.computeValueFnc)
-        #to reduce simulation frequency
-        p.setSimSpeed(dt_sim=0.001, max_update_rate=200)
+        def reset():
+            """Standing still in the policy's default posture, the walking policy on."""
+            p.resetRobot(basePoseDes=base_pose, q_reset=q_reset)
+            p.initVars()
+            p.dm.wait_for_reset(base_pose, q_reset)
+            p.pid.setPDjoints(rl_controller.kp, rl_controller.kd, np.zeros(12))
+            rl_controller.reset()
+            vf.reset()
 
-
-        while not ros.is_shutdown():
-
-            isrec_prev = isrec
+        reset()
+        k, step, next_push, push_end, arrow = 0, 0, first_push, -1.0, None
+        nominal, V = True, 1.0
+        ticks, overruns, last_tick = 0, 0, None
+        while not ros.is_shutdown() and (k < len(pushes) or float(np.ravel(p.time)[0]) < next_push):
             p.updateKinematics()
+            t = float(np.ravel(p.time)[0])
+            lin_acc_b = p.baseLinAccB
+            lin_vel_b = p.b_R_w.dot(p.baseTwistW[:3])
+            ang_vel_b = p.b_R_w.dot(p.baseTwistW[3:6])
+            proj_gravity = p.b_R_w.dot(np.array([0, 0, -1]))
 
-            # MANAGE JOYSTICK
-            if p.gracefulCollapseFlag:
-                if p.gracefulCollapse():
-                    break
-            if use_joy:
-                axes, buttons = joy.get_commands()
-                # use a scaling to make the joy input less reactive
-                long_x = 0.5 * axes[0]
-                long_y = 0.3 * axes[1]
-                rot_z = 0.4 * axes[2]
-                # safety layer
-                if buttons[0] and not p.gracefulCollapseFlag:
-                    print(colored("start Graceful collapse", "red"))
-                    p.kp_act, p.kd_act, p.ki_act = p.pid.getPDjoints()
-                    print(colored(f"Storing actual pd: {p.kp_act}, {p.kd_act},{p.ki_act}"), "red")
-                    p.gracefulCollapseFlag = True
-                if buttons[1]:
-                    print(colored("Severe shutdown!", "red"))
-                    if p.state_estimation == 'pronto':
-                        os.system(" rosnode kill /aliengo_joint_swapper")
-                        os.system(" rosnode kill /pronto_aliengo")
-                    ros.signal_shutdown("killed")
-                    p.deregister_node()
-                    break
+            # the safety filter, from 1 s after a reset
+            if step % vf_every == 0 and t >= 1.0:
+                nominal, V = vf.computeValueFnc(proj_gravity, ang_vel_b, p.q, p.qd)
+                nominal = nominal or args.no_filter
+                p.publishFilter(V, not nominal)
+                if log and not log[-1]["fell"]:
+                    log[-1]["v_min"] = min(log[-1]["v_min"], V)
+                    if not nominal and np.isnan(log[-1]["switch"]):
+                        log[-1]["switch"] = t - log[-1]["t"]
 
-            #MANAGE CONTROLLER STARTING
-            # if p.state_estimation == 'pronto':
-            #     if np.all(p.pronto_contacts) and not p.controller_ready:
-            #         print(colored("ALL FEET ARE IN STANCE: It is possible to start RL controller", "red"))
-            #         p.controller_ready = True
-            # else:
-            p.controller_ready = True
+            # the push
+            if t >= next_push and k < len(pushes):
+                kick, name, angle = pushes[k]
+                yaw = p.basePoseW[5]
+                direction = np.array([np.cos(yaw + angle), np.sin(yaw + angle), 0.])
+                p.push(p.robot.robotMass * kick / push_duration * direction[:2], push_duration)
+                print(colored(f"push {k + 1}/{len(pushes)}: {kick} m/s, {name}", "blue"))
+                log.append({"kick": kick, "dir": name, "t": t, "v_min": V, "switch": np.nan, "fell": False})
+                arrow = (p.basePoseW[:3] - 0.6 * direction, 0.45 * direction)
+                push_end, next_push, k = t + 0.5, t + args.push_period, k + 1
 
-            # CONTROLLER
-            if (p.time > (p.startTime + 4.)) and p.controller_ready:
-                #rl_controller.velocity_cmd = np.array([0.5, 0.0, 0.0])
-                if use_joy:
-                    rl_controller.velocity_cmd = np.array([long_x, long_y, rot_z])
-                else:
-                    rl_controller.velocity_cmd = np.array([0.5, 0.0, 0.0])
-
-                p.baseTwistW_des[:3] = p.b_R_w.T @ np.append(rl_controller.velocity_cmd[:2], 0.0)
-                p.baseTwistW_des[5] = rl_controller.velocity_cmd[2]
-
-                # Compute observations for the policy
-                # Disable the lin_vel_b and use lin_acc_b observation if using NN SE
-                if rl_controller.use_nn_se and not rl_controller.debug:
-                    lin_acc_b = p.baseLinAccB
-                    lin_vel_b = None
-                elif rl_controller.use_nn_se and rl_controller.debug:
-                    lin_acc_b = p.baseLinAccB
-                    lin_vel_b = p.b_R_w.dot(p.baseTwistW[:3])
-                else:
-                    lin_acc_b = None
-                    lin_vel_b = p.b_R_w.dot(p.baseTwistW[:3])
-
-                ang_vel_b = p.b_R_w.dot(p.baseTwistW[3:6])
-                proj_gravity_b = p.b_R_w.dot(np.array([0, 0, -1]))
-
-                # pushes of increasing entity
-                if not p.real_robot and  (p.time > (p.startTime + 5.)) and time_push % 4. == 0 and sim_push:# and (isrec or allow_push_not_rec):
-                     p.applyForce(0, 50*p.counter, 0, 0, 0, 0, 0.25)
-                     p.startPush = p.time
-                     print(50*p.counter)
-                     p.counter+=1
-                #try only backup
-                #isrec = False
-                # if isrec:
-                     # nominal policy
-                     #rl_controller.velocity_cmd = np.array([0.0, 0.0, 0.0])
-                p.rl_q_des = rl_controller.action(lin_acc_b, lin_vel_b, ang_vel_b, proj_gravity_b, p.q, p.qd, policy_type="default")
-                # else:
-                #     # backup policy
-                #     #print(colored("I am executing backup policy!","red"))
-                #     rl_controller.velocity_cmd = np.array([0.0, 0.0, 0.0])
-                #     p.rl_q_des = rl_controller.action(lin_acc_b, lin_vel_b, ang_vel_b, proj_gravity_b, p.q, p.qd, policy_type="safe")
-                # #check this
-                # #print('ang_vel_b A',ang_vel_b)
-                # #print('proj_gravity A',proj_gravity)
-
-
-
-                if step % vf_decimation == 0 and (p.time >(p.startTime + 5.)):# and isrec:
-                      isrec, V_safe = vf.computeValueFnc(body_ang_vel=ang_vel_b, proj_gravity=proj_gravity_b, joint_pos=p.q, joint_vel=p.qd, threshold=0.8, vf_additional_term = 0.0)
-                # #     isrec = True
-                #     #publish value function
-                #     msg = Float32()
-                #     msg.data = V_safe
-                #     p.pub_vf.publish(msg)
-                #     #pub rl command
-                #     msg_ref_vel = Vector3()
-                #     msg_ref_vel.x = rl_controller.velocity_cmd[0]
-                #     msg_ref_vel.y = rl_controller.velocity_cmd[1]
-                #     msg_ref_vel.z = rl_controller.velocity_cmd[2]
-                #     p.pub_rl_ref_vel.publish(msg_ref_vel)
-                #     #isrec = True #just record value functtion but dont use
-                #     #print(V_safe)
-                # # '''elif step % decimation == 0:
-                # #     if np.all(np.abs(lin_vel_b < 10e-2)) and np.all(np.abs(p.qd) < 10e-2):
-                # #         #print('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')
-                # #         isrec = True
-                # #         rl_controller.velocity_cmd = np.array([0.5, 0.0, 0.0])
-                # #         vf.count = 0
-                # #         vf.VF = True'''
-                # if not isrec_prev and isrec:
-                #     time_push = 0
-                # step += 1
-
-                # time based switch
-                # if p.time > (p.startTime + 3.): #backup policy
-                #     rl_controller.velocity_cmd = np.array([0.0, 0.0, 0.0])
-                #     p.rl_q_des = rl_controller.action(lin_vel_b, ang_vel_b, proj_gravity_b, p.q, p.qd, policy_type="safe")
-                # else:
-                #     p.rl_q_des = rl_controller.action(lin_vel_b, ang_vel_b, proj_gravity_b, p.q, p.qd, policy_type="default")
-
-                # switch off wbc
-                p.grForcesW_des = np.zeros((12))
-                p.tau_ffwd = np.zeros(12)
-                p.send_command(p.rl_q_des, np.zeros(12), np.zeros(12), log_data_in_send_command=False)
-
+            # the walking policy, or the safe one at zero command
+            if nominal:
+                rl_controller.velocity_cmd = cmd
+                p.q_des = rl_controller.action(lin_acc_b, lin_vel_b, ang_vel_b, proj_gravity, p.q, p.qd,
+                                               policy_type="default")
             else:
-                p.tau_ffwd, p.grForcesW_des = p.wbc.gravityCompensationBase(p.B_contacts,    p.wJ,
-                                                                                p.h_joints,
-                                                                                p.comPoseW)
-                p.send_command(p.q_des, p.qd_des, p.alphaCollapse * p.tau_ffwd, log_data_in_send_command=False)
+                rl_controller.velocity_cmd = np.zeros(3)
+                p.q_des = rl_controller.action(lin_acc_b, lin_vel_b, ang_vel_b, proj_gravity, p.q, p.qd,
+                                               policy_type="safe")
+            p.send_des_jstate(p.q_des, np.zeros(12), np.zeros(12))
+            if step % vis_every == 0:
+                p.showFilter(V, not nominal, arrow if t < push_end else None)
+            p.rate.sleep()
+            # a control tick the loop missed: the simulation went on more than 1.5 periods
+            tick = ros.get_time()
+            ticks += 1
+            overruns += last_tick is not None and tick - last_tick > 1.5 * p.dt
+            last_tick = tick
+            p.time = np.round(p.time + p.dt, 4)
+            step += 1
 
-            if p.time < (p.startPush+0.25):
-                p.ros_pub.add_arrow(p.basePoseW[:3], np.array([0, 50 * p.counter, 0]) / 300, "blue", scale=1.5)
-            time_push = np.round(time_push + p.dt, 4)
-            #p.visualizeContacts(delete_markers=True)
+            if p.dm.check_fallen(p.basePoseW[2], inclination(p.quaternion)):
+                print(colored("fallen: reset", "red"))
+                if log:
+                    log[-1]["fell"] = True
+                reset()
+                step, next_push, push_end, nominal, V = 0, first_push, -1.0, True, 1.0
+                last_tick = None
+
+        print("\npush             lowest V   safe policy after   outcome")
+        for e in log:
+            switch = "-" if np.isnan(e["switch"]) else f"{e['switch']:.2f} s"
+            print(f"{e['kick']:.1f} m/s {e['dir']:9s} {e['v_min']:7.2f}   {switch:>17s}   "
+                  f"{'fell' if e['fell'] else 'recovered'}")
+        print(f"fell {sum(e['fell'] for e in log)} of {len(log)} pushes, threshold {vf.threshold}"
+              f"{', filter off' if args.no_filter else ''}")
+        print(colored(f"control ticks missed: {overruns} of {ticks} at {args.speed}x real time"
+                      + (" (lower --speed)" if overruns > 0.01 * ticks else ""),
+                      "yellow" if overruns > 0.01 * ticks else "green"))
 
     except (ros.ROSInterruptException, ros.service.ServiceException):
-        if p.SAVE_BAG:
-            p.recorder.stop_recording_srv()
         ros.signal_shutdown("killed")
         p.deregister_node()
-
-    if conf.plotting:
-        pass
-        # plotJoint('position', time_log=p.time_log, q_log=p.q_log, q_des_log=p.q_des_log, sharex=True, sharey=False,
-        #           start=0, end=-1)
-        # plotFrame('position', time_log=p.time_log, des_Pose_log=p.basePoseW_des_log, Pose_log=p.basePoseW_log,
-        #           title='Base', frame='W', sharex=True, sharey=False, start=0, end=-1)
-        # plotFrame('velocity', time_log=p.time_log, des_Twist_log=p.baseTwistW_des_log, Twist_log=p.baseTwistW_log,
-        #           title='Base', frame='W', sharex=True, sharey=False, start=0, end=-1)
-    if p.SAVE_BAG:
-        p.recorder.stop_recording_srv()
