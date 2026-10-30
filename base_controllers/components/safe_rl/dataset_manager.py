@@ -17,6 +17,16 @@ class DatasetManager():
         self.policy_frequency = 50  # Hz
         self.decimation = (1 / self.quadruped.dt) * (1 / self.policy_frequency)
 
+        # -------------------------------
+        # Episode: reset, walk at a command, push, recover or fall
+        # -------------------------------
+        # Velocity command (vx, vy, wz), drawn as the walking policy's training draws it (safe_rl
+        # velocity_env_cfg.py, CommandsCfg): uniform in +-cmd_range, rel_standing of the episodes at
+        # zero and rel_yaw_only of the others only turning.  Never outside the training range.
+        self.cmd_range = np.array([0.5, 0.5, 0.5])
+        self.rel_standing = 0.1
+        self.rel_yaw_only = 0.1
+
     # -------------------------------
     # Capture Point Computation
     # -------------------------------
@@ -104,6 +114,15 @@ class DatasetManager():
         print(colored("The reset robot did not settle; starting anyway", "red"))
         return False
 
+    def sample_command(self):
+        """A velocity command (vx, vy, wz) drawn as in the walking policy's training."""
+        cmd = np.random.uniform(-self.cmd_range, self.cmd_range)
+        if np.random.uniform() < self.rel_standing:
+            cmd[:] = 0.0
+        elif np.random.uniform() < self.rel_yaw_only:
+            cmd[:2] = 0.0
+        return cmd
+
     # -------------------------------
     # Main Function: Single Simulation Episode
     # -------------------------------
@@ -118,13 +137,7 @@ class DatasetManager():
 
         # reset robot
         self.warmup_time = warmup_time
-        actor_network.velocity_cmd = np.array([
-            np.random.uniform(-0.5, 1.0),  # vx
-            np.random.uniform(-0.3, 0.3),  # vy
-            np.random.uniform(-0.7, 0.7)  # yaw_rate
-        ])
-        # debug
-        # actor_network.velocity_cmd = np.array([0.5, 0.0, 0.0])
+        actor_network.velocity_cmd = self.sample_command()
         print(f"Nominal policy velocity command {actor_network.velocity_cmd}")
         # generate push instant
         low = warmup_time - 0.5
