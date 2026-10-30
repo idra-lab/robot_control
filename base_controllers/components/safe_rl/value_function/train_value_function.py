@@ -10,6 +10,9 @@ With --val, datasets kept out of the training: every 25 epochs V of their states
 how their episode ended (Brier score, the mean of (V - 1)^2 on recovering episodes and V^2 on falling
 ones), and the model saved is the one that scored best: on the training episodes V keeps improving
 long after it stops improving on unseen ones.
+
+The model is saved twice: <model>.pkl (flax parameters, for training and its tools) and, through
+export_onnx.py, <model>.onnx, the format the safety filter runs (needs torch and the onnx package).
 """
 
 import argparse
@@ -284,6 +287,9 @@ if best_params is not None:
 with open(model_path, 'wb') as f:
     pickle.dump({'model_params': state.params, 'mean': mean, 'std': std}, f)
 print("Model saved at", model_path)
+# the runtime format: the safety filter runs the ONNX export (value_function_manager.py)
+from export_onnx import export_onnx
+export_onnx(model_path)
 
 # ====================================
 #       Value Estimate Statistics
