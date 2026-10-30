@@ -1,120 +1,83 @@
 import os
 
 import numpy as np
-import torch
-# Value function network load
-import flax.linen as nn_flax
-import jax
-from jax import numpy as jnp
-from functools import partial
-import pickle
+import onnxruntime as ort
+
+# The model and threshold per robot: models/VF_push_end_<robot>.onnx, trained on the push dataset of
+# 2026-10-29 (value_function_report.md) and exported by export_onnx.py.  Aliengo at 0.5: falls from
+# 48 % to 8 % on the same 105 pushes in Gazebo.
+MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+DEFAULT_THRESHOLD = {"aliengo": 0.5, "go2": 0.5}
+STATE = 30
 
 
-def load_value(file_path):
-    with open(file_path, 'rb') as f:
-        return pickle.load(f)
-
-
-class CriticNetwork(nn_flax.Module):
-    @nn_flax.compact
-    def __call__(self, x):
-        x = nn_flax.Dense(512)(x)
-        x = nn_flax.LayerNorm()(x)
-        x = nn_flax.elu(x)
-        x = nn_flax.Dense(256)(x)
-        x = nn_flax.LayerNorm()(x)
-        x = nn_flax.elu(x)
-        x = nn_flax.Dense(128)(x)
-        x = nn_flax.LayerNorm()(x)
-        x = nn_flax.elu(x)
-        # Output initialized to 1 (probability of survival)
-        x = nn_flax.Dense(1, kernel_init=nn_flax.initializers.zeros, bias_init=nn_flax.initializers.ones)(x)
-        # x = nn.Dense(1)(x)
-        return x.squeeze(-1)
-
-
-class CriticEvaluator:
-    def __init__(self, model, params):
-        self.apply_fn = model.apply
-        self.params = params
-
-
-def normalize_inputs(obss, mean, std):
-    return (obss - mean) / (std + 1e-8)
-
-
-# @jax.jit
-@partial(jax.jit, static_argnames=['critic_model'])
-def critic_inference(critic_model, params, obs):
-    return critic_model.apply(params, obs)
+def default_model(robot_name):
+    return os.path.join(MODELS_DIR, f"VF_push_end_{robot_name}.onnx")
 
 
 class ValueFunctionManager:
-    def __init__(self):
-        #model_path = "components/safe_rl/value_function/models/VF_new_policies3f.pkl"#0.43 2 #e.pkl" 0.4 1
-        #model_path = "components/safe_rl/value_function/models/VF_new_policies2e.pkl"
-        #model_path = "components/safe_rl/value_function/models/VF_new2.pkl" #150N lateral push triggers backup
-        model_path = os.environ['LOCOSIM_DIR']+"/robot_control/base_controllers/components/safe_rl/value_function/models/VF_se_100_cp_terminationB.pkl"
-        self.model = self.load_value(model_path)
-        self.setup_value_function(self.model)
-        print("Loaded model parameters.")
-        self.count = 0
-        self.min_switch = 1
-        self.VF = True
-        self.count_back = 0
-        self.min_back = 200
+    """The safety filter.  V(x) is the chance that the walking policy recovers from the current state
+    with no further push (train_value_function.py); the filter switches to the safe policy when it
+    drops below the threshold and back when it has recovered.
+
+    computeValueFnc returns (VF, V): VF True means the walking policy may run, False that the safe
+    policy has to.  It switches to the safe policy after min_switch evaluations in a row below the
+    threshold, and back after min_back in a row above it.  The counts are evaluations, so the times
+    depend on the caller's rate: at 100 Hz the defaults are 0.01 s and 2 s.
+
+    The value function runs as ONNX (export_onnx.py), on onnxruntime with one thread like the
+    policies, in simulation and on the robot; training and its tools use JAX (network.py)."""
+
+    def __init__(self, robot_name="aliengo", model_path=None, threshold=None, min_switch=1, min_back=200):
+        model_path = default_model(robot_name) if model_path is None else model_path
+        threshold = DEFAULT_THRESHOLD[robot_name] if threshold is None else threshold
+        if not model_path.endswith(".onnx"):
+            raise ValueError(f"{model_path}: the safety filter runs ONNX; export the model with export_onnx.py")
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = 1
+        options.inter_op_num_threads = 1
+        self.session = ort.InferenceSession(model_path, sess_options=options, providers=["CPUExecutionProvider"])
+        self._obs = np.zeros((1, STATE), dtype=np.float32)
+        print(f"Loaded value function {model_path}, threshold {threshold}")
+        self.threshold = threshold
+        self.min_switch = min_switch
+        self.min_back = min_back
         self.backup_trigger_counter = 0
+        self.reset()
 
-    # Function to load value function
-    def load_value(self, file_path):
-        with open(file_path, 'rb') as f:
-            return pickle.load(f)
+    def reset(self):
+        """Back to the walking policy, e.g. after the robot is reset."""
+        self.VF = True
+        self.count = 0
+        self.count_back = 0
 
-    def setup_value_function(self, model):
-        # Setup value function network
-        self.critic_model = CriticNetwork()
-        self.params, self.mean, self.std = model['model_params'], model['mean'], model['std']
-        # Create object to evaluate the value function
-        self.critic_network = CriticEvaluator(self.critic_model, self.params)
-
-    def computeValueFnc(self,proj_gravity, body_ang_vel, joint_pos, joint_vel,   threshold, vf_additional_term):
-
+    def value(self, proj_gravity, body_ang_vel, joint_pos, joint_vel):
+        """V(x) of the state, in the base frame: projected gravity, angular velocity, joint positions
+        and velocities in the order of quadruped.q (the normalisation is inside the ONNX graph)."""
         # dimension of observation vector = 3+3+12+12=30
-        obs_flax_np = np.concatenate((
-            proj_gravity.astype(np.float32),
-            body_ang_vel.astype(np.float32),
-            joint_pos.astype(np.float32),
-            joint_vel.astype(np.float32)
-        ))
+        self._obs[0, 0:3] = proj_gravity
+        self._obs[0, 3:6] = body_ang_vel
+        self._obs[0, 6:18] = joint_pos
+        self._obs[0, 18:30] = joint_vel
+        return float(self.session.run(None, {"obs": self._obs})[0][0])
 
-        obs_flax = jnp.array(obs_flax_np)  # jax.numpy array
-
-        # Normalize the observation
-        obs_flax = normalize_inputs(obs_flax, self.mean, self.std)
-
-        V_safe = critic_inference(self.critic_model, self.critic_network.params, obs_flax)
-        #print(V_safe)
-        #self.VF = True
-        #return self.VF, V_safe
+    def computeValueFnc(self, proj_gravity, body_ang_vel, joint_pos, joint_vel, threshold=None, vf_additional_term=0.0):
+        threshold = self.threshold if threshold is None else threshold
+        V_safe = self.value(proj_gravity, body_ang_vel, joint_pos, joint_vel)
         if V_safe - vf_additional_term > threshold and self.VF:
-            #  print(f"\033[92mV_safe: {V_safe:.4f}\033[0m")
             self.count = 0
             self.VF = True
         elif self.VF:
             self.count += 1
-            print(f"\033[91mV_safe: {V_safe:.4f} : {self.backup_trigger_counter}\033[0m")
             if self.count >= self.min_switch:
                 self.VF = False
-                self.backup_trigger_counter+=1
-                print(self.backup_trigger_counter)
-            else:
-                self.VF = True
+                self.backup_trigger_counter += 1
+                print(f"\033[91mV {V_safe:.3f} < {threshold}: safe policy (switch {self.backup_trigger_counter})\033[0m")
         elif V_safe - vf_additional_term > threshold and not self.VF:
             self.count_back += 1
-            #print('self.count_back',self.count_back)
             if self.count_back >= self.min_back:
-                print('Back')
-                self.VF =True
+                print(f"\033[92mV above {threshold} for {self.min_back} evaluations: walking policy\033[0m")
+                self.VF = True
                 self.count_back = 0
                 self.count = 0
         elif not self.VF:
