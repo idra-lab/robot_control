@@ -1,0 +1,157 @@
+################ aliengo, 2026-10-30
+
+======== fall rule (fall_rule.py)
+240 episodes run to the ground: fell 109, recovered 131 (on the belly, upright: 5)
+recoveries: largest inclination 24.1 deg, lowest base 0.294 m
+falls: smallest largest inclination 61.4 deg
+the rule, 45 deg or base below 0.2 m: in the gap
+recoveries that crossed an inclination (they would be labelled falls):
+   20 deg: 4
+   25 deg: 0
+   30 deg: 0
+   35 deg: 0
+   40 deg: 0
+   45 deg: 0
+   50 deg: 0
+   60 deg: 0
+captured, then fell (capture point within 5 cm for the hold, before the robot tilted past the rule):
+  one tick: captured  99, then fell 1
+  0.1 s   : captured  93, then fell 1
+  0.2 s   : captured  79, then fell 1
+  0.3 s   : captured  75, then fell 1
+  0.5 s   : captured  64, then fell 1
+
+Plot: components/safe_rl/report_figures/aliengo_fall_rule.png
+
+======== dataset (dataset_statistics.py, training and test batches)
+
+Samples: 42697, labelled fallen 230, success (captured or survived) 330
+Episodes: 560, discarded 0 (joint range 0, fell before the push 0, control ticks missed 0)
+  fallen 230, captured 133, survived 197
+  fallen   episodes end 0.57 s after the push (median)
+  captured episodes end 0.98 s after the push (median)
+  survived episodes end 3.21 s after the push (median)
+
+Commands: vx -0.50..+0.50, vy -0.50..+0.50, wz -0.50..+0.50; standing 10%, only turning 9%; outside the training range +-0.5: 0
+
+Push: kick = body mass x velocity change of the push force, m/s; k50 = the kick fallen from half the time [95 %]
+  all      : k50 1.76 [1.68, 1.84], scale 0.28, 560 episodes
+  standing : k50 1.64 [1.50, 1.80], scale 0.11,  56 episodes
+  walking  : k50 1.77 [1.69, 1.86], scale 0.30, 504 episodes
+  forward           : k50 1.89 [1.75, 2.03], 135 episodes   (benchmark, standing: 1.65)
+  forward, standing : k50 1.51 [0.77, 1.87],  10 episodes   (benchmark, standing: 1.65)
+  left              : k50 1.48 [1.34, 1.62], 147 episodes   (benchmark, standing: 1.90)
+  left, standing    : k50 1.74 [1.45, 1.91],  14 episodes   (benchmark, standing: 1.90)
+  backward          : k50 2.08 [1.93, 2.26], 150 episodes   (benchmark, standing: 1.63)
+  backward, standing: k50 1.66 [1.50, 1.94],  21 episodes   (benchmark, standing: 1.63)
+  right             : k50 1.57 [1.43, 1.72], 128 episodes   (benchmark, standing: 1.96)
+  right, standing   : k50 1.59 [1.06, 2.05],  11 episodes   (benchmark, standing: 1.96)
+  fall rate per kick band:
+    0.0-1.0 m/s: 188 episodes, fallen 1%
+    1.0-1.5 m/s:  94 episodes, fallen 17%
+    1.5-2.0 m/s:  86 episodes, fallen 45%
+    2.0-2.5 m/s:  96 episodes, fallen 88%
+    2.5-3.0 m/s:  96 episodes, fallen 93%
+
+Joint positions, rad (min..max over the legs)
+  haa: -1.23..+1.24   limits -1.22..+1.22, samples past them by > 0.5: 0
+  hfe: -1.46..+2.16   limits -3.14..+3.14, samples past them by > 0.5: 0
+  kfe: -2.79..-0.63   limits -2.78..-0.65, samples past them by > 0.5: 0
+Joint velocities: max |qd| 28.1 rad/s, 99th percentile 11.2
+Projected gravity z: -1.00..-0.52 (-1 upright), 0.0% of states upside down
+
+Plot: components/safe_rl/report_figures/aliengo_dataset.png
+      5 Discarded: joint range 0, fell before the push 0, control ticks missed 0; ticks missed in all 1
+      1 Discarded: joint range 0, fell before the push 0, control ticks missed 0; ticks missed in all 2
+      1 Discarded: joint range 0, fell before the push 0, control ticks missed 0; ticks missed in all 4
+      1 Discarded: joint range 0, fell before the push 0, control ticks missed 0; ticks missed in all 5
+
+======== training (train.log)
+Transitions: 25550, labelled fallen 144, labelled success 206
+Held-out Brier score best at epoch 75: 0.0176, that model is saved
+ONNX export components/safe_rl/value_function/models/VF_push_end_aliengo.onnx: max |V_onnx - V_jax| 5.4e-07 on 2000 states
+
+======== evaluation on the test batches, the ONNX model (evaluate_value_function.py)
+140 episodes: fell 52, recovered 88
+
+Walking: recovered episodes' last second, V 0.989 (min 0.266, below 0.5: 0.1%, 0.8: 0.7%, 0.9: 1.4%)
+  the state before the push acts (datasets recorded from the push start), V 0.995 (min 0.975)
+
+Separation, ROC AUC of V (fell vs recovered) on the episodes still running:
+  0.1 s after the push: AUC 0.902, 140 episodes
+  0.2 s after the push: AUC 0.962, 140 episodes
+  0.3 s after the push: AUC 0.985, 140 episodes
+  0.5 s after the push: AUC 0.988, 119 episodes
+
+As a filter, V below the threshold (false alarm: in a recovered episode, after a kick below 1.0 m/s or any):
+  0.5: falls warned 52/52 before the fall by median 0.41 s (10th percentile 0.22 s); false alarms 0/52 light kicks, 9/88 any
+  0.8: falls warned 52/52 before the fall by median 0.43 s (10th percentile 0.24 s); false alarms 2/52 light kicks, 21/88 any
+  0.9: falls warned 52/52 before the fall by median 0.45 s (10th percentile 0.26 s); false alarms 8/52 light kicks, 32/88 any
+
+Calibration, V 0.3 s after the push against the episodes that recovered:
+  V 0.0-0.2:  39 episodes, mean V 0.01, recovered 3%
+  V 0.2-0.4:   3 episodes, mean V 0.36, recovered 0%
+  V 0.4-0.6:   8 episodes, mean V 0.51, recovered 25%
+  V 0.6-0.8:   7 episodes, mean V 0.70, recovered 71%
+  V 0.8-0.9:  10 episodes, mean V 0.88, recovered 80%
+  V 0.9-1.0:  73 episodes, mean V 0.98, recovered 99%
+
+Plot: components/safe_rl/report_figures/aliengo_value_function.png
+
+======== evaluation of the model deployed before, VF_se_100_cp_terminationB.pkl
+140 episodes: fell 52, recovered 88
+
+Walking: recovered episodes' last second, V 0.948 (min 0.000, below 0.5: 4.7%, 0.8: 7.2%, 0.9: 8.7%)
+  the state before the push acts (datasets recorded from the push start), V 0.947 (min 0.007)
+
+Separation, ROC AUC of V (fell vs recovered) on the episodes still running:
+  0.1 s after the push: AUC 0.532, 140 episodes
+  0.2 s after the push: AUC 0.592, 140 episodes
+  0.3 s after the push: AUC 0.677, 140 episodes
+  0.5 s after the push: AUC 0.768, 119 episodes
+
+As a filter, V below the threshold (false alarm: in a recovered episode, after a kick below 1.0 m/s or any):
+  0.5: falls warned 45/52 before the fall by median 0.38 s (10th percentile 0.15 s); false alarms 40/52 light kicks, 69/88 any
+  0.8: falls warned 46/52 before the fall by median 0.42 s (10th percentile 0.18 s); false alarms 44/52 light kicks, 76/88 any
+  0.9: falls warned 47/52 before the fall by median 0.44 s (10th percentile 0.19 s); false alarms 47/52 light kicks, 79/88 any
+
+Calibration, V 0.3 s after the push against the episodes that recovered:
+  V 0.0-0.2:  21 episodes, mean V 0.04, recovered 0%
+  V 0.2-0.4:   2 episodes, mean V 0.24, recovered 0%
+  V 0.4-0.6:   2 episodes, mean V 0.47, recovered 0%
+  V 0.6-0.8:   4 episodes, mean V 0.70, recovered 75%
+  V 0.8-0.9:   1 episodes, mean V 0.89, recovered 0%
+  V 0.9-1.0: 110 episodes, mean V 1.00, recovered 77%
+
+======== closed loop, threshold 0.5 (compare_filter.py)
+105 episodes
+  fell: alone 50 (48%), filtered 8 (8%)
+  falls prevented 42, caused 0
+  switches to the safe policy: 59; needless (recovered alone) 9/55, of them after a kick below 1.0 m/s 0/34; before the push 0
+  switch after the push start: median 0.17 s (10-90 % 0.13-0.24 s)
+  falls left: 8, 8 after a switch 0.33-0.69 s before the fall; kicks [1.   2.51 2.59 2.78 2.79 2.82 2.89 2.96]; by direction forward 2, left 3, backward 0, right 3
+  needless switches by direction: forward 2, left 2, backward 1, right 4
+  fall rate per kick band, alone -> filtered:
+    0.0-1.0 m/s ( 35):   3% ->   3%
+    1.0-1.5 m/s ( 11):   9% ->   0%
+    1.5-2.0 m/s ( 23):  52% ->   0%
+    2.0-2.5 m/s ( 19): 100% ->   0%
+    2.5-3.0 m/s ( 17): 100% ->  41%
+
+Plot: components/safe_rl/report_figures/aliengo_closed_loop.png
+
+======== closed loop, threshold 0.8 (compare_filter.py)
+105 episodes
+  fell: alone 50 (48%), filtered 6 (6%)
+  falls prevented 45, caused 1
+  switches to the safe policy: 69; needless (recovered alone) 20/55, of them after a kick below 1.0 m/s 5/34; before the push 2
+  switch after the push start: median 0.16 s (10-90 % 0.10-0.26 s)
+  falls left: 6, 6 after a switch 0.21-0.57 s before the fall; kicks [1.   1.74 1.82 2.59 2.82 2.96]; by direction forward 1, left 3, backward 0, right 2
+  falls caused: 1.74 m/s left
+  needless switches by direction: forward 4, left 6, backward 2, right 8
+  fall rate per kick band, alone -> filtered:
+    0.0-1.0 m/s ( 35):   3% ->   3%
+    1.0-1.5 m/s ( 11):   9% ->   0%
+    1.5-2.0 m/s ( 23):  52% ->   9%
+    2.0-2.5 m/s ( 19): 100% ->   0%
+    2.5-3.0 m/s ( 17): 100% ->  18%
