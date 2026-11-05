@@ -51,9 +51,10 @@ def export_onnx(pkl_path, onnx_path=None):
             self.register_buffer("mean", torch.tensor(np.asarray(model["mean"]), dtype=torch.float32))
             self.register_buffer("std", torch.tensor(np.asarray(model["std"]), dtype=torch.float32))
             self.net = torch.nn.Sequential(*layers)
+            self.sign = float(model.get("sign", 1.0))  # abs: the score -V_RA
 
         def forward(self, obs):
-            return self.net((obs - self.mean) / (self.std + 1e-8)).squeeze(-1)
+            return self.sign * self.net((obs - self.mean) / (self.std + 1e-8)).squeeze(-1)
 
     critic = Critic().eval()
     torch.onnx.export(critic, torch.zeros(1, STATE), onnx_path, input_names=["obs"], output_names=["value"],

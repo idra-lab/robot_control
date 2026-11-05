@@ -3,19 +3,29 @@
 # ====================================
 """
     python3 train_value_function.py --method abs|mps [--data <dataset.npy> ...] [--val <dataset.npy> ...]
-                                    [--model <model.pkl>] [--epochs N] [--horizon K] [--x-inv static|polygon]
+                                    [--model <model.pkl>] [--epochs N] [--x-inv static|polygon]
                                     [--obs-noise S] [--seed N]
 
-TD(0) on the transitions of the datasets saferl_controller_dataset.py writes, with the paper's target,
-Eq. (4): V'(x) = (1 - I_fall) [(1 - I_CP) V(x') + I_CP], V(x') from a target network updated by an
-exponential moving average.  Several datasets are pooled, e.g. runs with different seeds.
+TD(0) on the transitions of the datasets saferl_controller_dataset.py writes, V(x') from a target
+network updated by an exponential moving average.  Several datasets are pooled, e.g. runs with
+different seeds.
 
---method abs, the ABS baseline (datasets of --method abs, the walking policy throughout): with
---horizon K (default 10, 0.2 s), as the original ABS training, only the last K transitions of a
-falling episode lead to the fall; the transition before them is labelled a success, so V(x) is
-whether the walking policy falls within K samples.  --horizon 0: the whole episode leads to the fall.
+--method mps, the paper's value function, Eq. (4): V'(x) = (1 - I_fall) [(1 - I_CP) V(x') + I_CP],
+V(x) the chance that the safe policy reaches the invariant set without leaving the safe set.
 
---method mps, the paper's value function (datasets of --method mps, the safe policy from the switch
+--method abs, the ABS baseline as published (He et al., RSS 2024, Eq. 17), on datasets of --method
+abs (the walking policy's whole rollouts): the discounted reach-avoid target
+    V'(s) = GAMMA_RA max{zeta(s), min{l(s), V(s')}} + (1 - GAMMA_RA) max{l(s), zeta(s)},
+GAMMA_RA = 0.999999, with the margins the dataset records: zeta = +1 out of the safe set, -1 in it,
+softened on the last RA_SOFTEN samples before a failure to -0.8, -0.6, ..., 1.0; l = tanh(log(e /
+sigma)), the walking policy's tracking error against its command (dataset_manager.py).  The episode's
+last state is terminal, V(s_T+1) = +inf, so V(s_T) = max{zeta(s_T), l(s_T)}.  V_RA <= 0: the
+walking policy reaches its target (tracking again) without a failure.  The model is saved as the
+safety score -V_RA (sign in the .pkl, applied in the ONNX export), so that the filter walks while
+the score is above its threshold for both methods; ABS's own rule, recovery when V_RA >= -0.05, is a
+threshold of 0.05 on the score.
+
+--method mps details (datasets of --method mps, the safe policy from the switch
 on): I_CP is the invariant set --x-inv, static equilibrium (default) or the capture point in the
 support polygon; the episode ends at its first sample there.  An episode that ends in neither a fall
 nor the set (a timeout) has no target for its last state and is left out.
@@ -53,7 +63,6 @@ parser.add_argument("--model", default=os.path.join(BASE_DIR, "models/VF_abs_tes
 parser.add_argument("--val", nargs="*", default=[])
 parser.add_argument("--epochs", type=int, default=1000)
 parser.add_argument("--method", choices=("abs", "mps"), required=True)
-parser.add_argument("--horizon", type=int, default=10, help="abs: samples before a fall that lead to it (0: all)")
 parser.add_argument("--x-inv", choices=("static", "polygon"), default="static", help="mps: the invariant set")
 parser.add_argument("--obs-noise", type=float, default=0.0, help="state noise, times SENSOR_NOISE")
 parser.add_argument("--seed", type=int, default=0)
@@ -98,31 +107,28 @@ class ValueNetwork(nn.Module):
 # ====================================
 #           Loss Function
 # ====================================
-""" def loss_fn(params, batch_states, batch_next_states, batch_fallen, batch_cp, target_params):
-    # loss_fn computes the TD-target and returns MSE loss:
-    loss = (V(s) - target)^2
-    target = (1 - fallen) * [ (1 - cp)*V(next_s) + cp ] 
-"""
-def loss_fn(params, batch_states, batch_next_states, batch_fallen, batch_cp, target_params, noise):
-    #forward pass, on the states with the sensor noise (none without --obs-noise)
-    batch_states = batch_states + noise
-    #eval value function function of the state
-    V_s = model.apply(params, batch_states)
-    #compute the value estimate V(x′) of the next state
+def td_target(columns, V_next):
+    """The TD target per transition from its columns: mps (I_fall, I_CP, -, -), Eq. (4) of the paper;
+    abs (zeta_t, l_t, last, V of the terminal state), ABS's discounted reach-avoid target."""
+    if args.method == "abs":
+        zeta, l, last, terminal = columns[:, 0], columns[:, 1], columns[:, 2], columns[:, 3]
+        V_next = jnp.where(last > 0, terminal, V_next)
+        return GAMMA_RA * jnp.maximum(zeta, jnp.minimum(l, V_next)) + (1 - GAMMA_RA) * jnp.maximum(l, zeta)
+    fallen, cp = columns[:, 0], columns[:, 1]
+    return (1.0 - fallen) * ((1.0 - cp) * V_next + cp)
+
+
+def loss_fn(params, batch_states, batch_next_states, batch_columns, target_params, noise):
+    # loss = (V(s) - target)^2, V on the states with the sensor noise (none without --obs-noise)
+    V_s = model.apply(params, batch_states + noise)
     V_next = jax.lax.stop_gradient(model.apply(target_params, batch_next_states))
-    indicators = 1.0 - batch_fallen #0 if fallen  I do not continue
-    #TD target computation (batch_cp: probability of capture now)
-    target = indicators * ((1-batch_cp)*V_next + batch_cp)
-    # jax.debug.print("target: {x}", x=target)
-    # target = indicators * V_next
-    #compute mean squared error
+    target = td_target(batch_columns, V_next)
     return jnp.mean(jnp.square(V_s - target))
 
 @jax.jit
-def train_step(state, batch_states, batch_next_states, batch_fallen, batch_cp, target_params, key):
-    #loss = loss_fn(params, batch_states, batch_next_states, batch_fallen, batch_cp, target_params)
+def train_step(state, batch_states, batch_next_states, batch_columns, target_params, key):
     noise = noise_std * jax.random.normal(key, batch_states.shape)
-    loss, grads = jax.value_and_grad(loss_fn)(state.params, batch_states, batch_next_states, batch_fallen, batch_cp,
+    loss, grads = jax.value_and_grad(loss_fn)(state.params, batch_states, batch_next_states, batch_columns,
                                               target_params, noise)
     # optimizer step to update params, Takes the gradients, Updates the parameters using the optimizer (params - learning_rate * Adam_update(grads))
     # replaces the old state with a new one containing the updated model (states.params)
@@ -140,7 +146,7 @@ def update_target_params(target_params, params, tau):
 def closest_power_of_2(n):
     return 2 ** (n.bit_length() - 1)
 
-def get_batches(states, next_states, fallen, capt_p, batch_size, rng):
+def get_batches(states, next_states, columns, batch_size, rng):
     """The transitions shuffled into minibatches: (num_batches, batch_size, ...) per variable."""
     batch_size = closest_power_of_2(batch_size)
     num_samples = states.shape[0]
@@ -159,7 +165,7 @@ def get_batches(states, next_states, fallen, capt_p, batch_size, rng):
         perm = jnp.tile(perm, repeats)
 
     indices = perm[:total_needed].reshape(num_batches, batch_size)
-    batches = (states[indices], next_states[indices], fallen[indices], capt_p[indices])
+    batches = (states[indices], next_states[indices], columns[indices])
     return batches, rng
 
 
@@ -178,20 +184,55 @@ input_dim = 30 # obst, obs_t+1, fallen, captured
 # sensor noise for --obs-noise, per state component: projected gravity (about 1 deg), angular velocity
 # rad/s, joint positions rad, joint velocities rad/s
 SENSOR_NOISE = np.concatenate([np.full(3, 0.02), np.full(3, 0.05), np.full(12, 0.005), np.full(12, 0.1)])
+# ABS's reach-avoid training (--method abs)
+GAMMA_RA = 0.999999
+RA_SOFTEN = np.linspace(-0.8, 1.0, 10)  # zeta of the last 10 states up to a failure
+
+def ra_episode(episode, ra):
+    """ABS's targets for one episode: per transition (zeta_t, l_t, last, V of the terminal state) and
+    the Monte Carlo reach-avoid value of each state along the episode (the held-out score)."""
+    n = len(episode)
+    zeta = np.concatenate([ra[:, 0], ra[-1:, 2]])  # the n + 1 states' failure margins
+    l = np.concatenate([ra[:, 1], ra[-1:, 3]])
+    if zeta[-1] > 0:  # ended in a failure: soften the last states
+        k = min(len(RA_SOFTEN), n + 1)
+        zeta[-k:] = RA_SOFTEN[-k:]
+    terminal = max(zeta[-1], l[-1])
+    value = np.empty(n + 1)
+    value[-1] = terminal
+    for j in range(n - 1, -1, -1):
+        value[j] = GAMMA_RA * max(zeta[j], min(l[j], value[j + 1])) + (1 - GAMMA_RA) * max(l[j], zeta[j])
+    columns = np.column_stack([zeta[:n], l[:n], np.arange(n) == n - 1, np.full(n, terminal)])
+    return columns, value[:n]
+
 
 def load_transitions(path):
     """The transitions of a dataset, one per row, labelled for --method, and per transition the
-    outcome its target stands for (1 success, 0 fall) and whether its episode fell.  A dataset row is
-    an episode, zero padded to the longest one.  The padding is left out: filled in with the
-    episode's last state, it weighed that state hundreds of times over every other."""
+    outcome its target stands for (mps: 1 success, 0 failure; abs: the Monte Carlo reach-avoid value,
+    as a safety score) and whether its episode failed.  Returns (states, next states, target columns,
+    outcomes, failed).  A dataset row is an episode, zero padded to the longest one.  The padding is
+    left out: filled in with the episode's last state, it weighed that state hundreds of times over
+    every other."""
     data = np.load(path)
     xinv_path = os.path.splitext(path)[0] + "_xinv.npy"
     xinv = np.load(xinv_path) if os.path.exists(xinv_path) else None
+    ra_path = os.path.splitext(path)[0] + "_ra.npy"
+    ra = np.load(ra_path) if os.path.exists(ra_path) else None
+    if args.method == "abs" and ra is None:
+        raise SystemExit(f"{path}: no {ra_path}; record the data with saferl_controller_dataset.py --method abs")
     print("Dataset loaded:", path, data.shape)
-    rows, outcomes, fell, dropped = [], [], [], 0
+    rows, columns, outcomes, fell, dropped = [], [], [], [], 0
     for e, episode in enumerate(data):
-        episode = episode[np.any(episode[:, :input_dim] != 0, axis=1)].copy()
+        valid = np.any(episode[:, :input_dim] != 0, axis=1)
+        episode = episode[valid].copy()
         n = len(episode)
+        if args.method == "abs":
+            cols, value = ra_episode(episode, ra[e][valid])
+            rows.append(episode)
+            columns.append(cols)
+            outcomes.append(-value)  # the safety score the model outputs
+            fell.append(np.full(n, episode[-1, -2] == 1))
+            continue
         if args.method == "mps":
             if args.x_inv == "polygon":
                 if xinv is None:
@@ -204,35 +245,35 @@ def load_transitions(path):
                 dropped += 1  # a timeout
                 continue
             outcome = np.full(len(episode), 1.0 - episode[-1, -2])
-        else:
-            outcome = np.full(n, 1.0 - episode[-1, -2])
-            if args.horizon and episode[-1, -2] == 1 and n > args.horizon:
-                episode[n - args.horizon - 1, -1] = 1.0
-                outcome[:n - args.horizon] = 1.0
         rows.append(episode)
+        # (I_fall, I_CP) and two unused columns
+        columns.append(np.column_stack([episode[:, -2], episode[:, -1], np.zeros(len(episode)), np.zeros(len(episode))]))
         outcomes.append(outcome)
         fell.append(np.full(len(episode), episode[-1, -2] == 1))
     if dropped:
-        print(f"  {dropped} of {len(data)} episodes left out: they ended in neither a fall nor the invariant set")
-    return np.concatenate(rows), np.concatenate(outcomes), np.concatenate(fell)
+        print(f"  {dropped} of {len(data)} episodes left out: they ended in neither a failure nor the invariant set")
+    data = np.concatenate(rows)
+    return (data[:, :input_dim], data[:, input_dim:2 * input_dim], np.concatenate(columns), np.concatenate(outcomes),
+            np.concatenate(fell))
 
 datasets = [load_transitions(path) for path in data_paths]
-data = np.concatenate([transitions for transitions, _, _ in datasets])
-episode_fell = np.concatenate([fell for _, _, fell in datasets])
-states = data[:, :input_dim]
-next_states = data[:, input_dim:2 * input_dim]
-fallen = data[:, -2]
-capt_p = data[:, -1]
-print(f"Transitions: {len(data)}, labelled fallen {int(fallen.sum())}, labelled success {int(capt_p.sum())}")
+states = np.concatenate([d[0] for d in datasets])
+next_states = np.concatenate([d[1] for d in datasets])
+columns = np.concatenate([d[2] for d in datasets])
+episode_fell = np.concatenate([d[4] for d in datasets])
+if args.method == "abs":
+    print(f"Transitions: {len(states)}, failing states (zeta > 0) {int(np.sum(columns[:, 0] > 0))}, states in the "
+          f"target (l <= 0) {int(np.sum(columns[:, 1] <= 0))}, episodes that failed {int(np.sum(columns[:, 2] * (columns[:, 3] > 0)))}")
+else:
+    print(f"Transitions: {len(states)}, labelled failed {int(columns[:, 0].sum())}, labelled success {int(columns[:, 1].sum())}")
 
 states, mean, std = normalize_states(states)
 # the next states with the states' statistics: V sees both through the same normalisation
 next_states = (next_states - mean) / (std + 1e-8)
 if val_paths:
     val_sets = [load_transitions(path) for path in val_paths]
-    val_states = jnp.array((np.concatenate([t[:, :input_dim] for t, _, _ in val_sets]) - mean) / (std + 1e-8),
-                           dtype=jnp.float32)
-    val_outcome = np.concatenate([outcome for _, outcome, _ in val_sets])
+    val_states = jnp.array((np.concatenate([d[0] for d in val_sets]) - mean) / (std + 1e-8), dtype=jnp.float32)
+    val_outcome = np.concatenate([d[3] for d in val_sets])
 # the state noise in the normalised space
 noise_std = jnp.array(args.obs_noise * SENSOR_NOISE / (std + 1e-8), dtype=jnp.float32)
 
@@ -241,8 +282,10 @@ noise_std = jnp.array(args.obs_noise * SENSOR_NOISE / (std + 1e-8), dtype=jnp.fl
 # ====================================
 states = jnp.array(states, dtype=jnp.float32)
 next_states = jnp.array(next_states, dtype=jnp.float32)
-fallen = jnp.array(fallen, dtype=jnp.float32)
-capt_p = jnp.array(capt_p, dtype=jnp.float32)
+columns = jnp.array(columns, dtype=jnp.float32)
+# the model's output: V for mps, the safety score -V_RA for abs (the network learns V_RA, the sign is
+# applied after; see SIGN)
+SIGN = -1.0 if args.method == "abs" else 1.0
 
 # ====================================
 #    Initialize / Load Model Params
@@ -293,25 +336,16 @@ with tqdm(range(epochs), desc="Epoch") as pbar:
         start_time = time.time()
         rng, subkey = jax.random.split(rng)
         #Sample batches
-        batches, rng = get_batches(states, next_states, fallen, capt_p, batch_size, subkey)
+        batches, rng = get_batches(states, next_states, columns, batch_size, subkey)
 
         #Compute loss + gradients (JIT-compiled)
         epoch_loss = 0
         batch_losses = []
-        # batches is a tuple of four big tensors, one per variable:
-        # batches = (
-        #     all_batch_states,  # shape: (num_batches, batch_size, dim)
-        #     all_batch_next_states,  # shape: (num_batches, batch_size, dim)
-        #     all_batch_fallen,  # shape: (num_batches, batch_size)
-        #     all_batch_cp  # shape: (num_batches, batch_size)
-        # )
-        #Loop over minibatches, over every batch inside the epoch.
-        for batch_states, batch_next_states, batch_fallen, batch_cp in zip(*batches):
-            #produces one batch at a time: batch_states: shape (batch_size, dim)...
-            # Perform one gradient update
+        # batches = (states (num_batches, batch_size, dim), next states (same), target columns
+        # (num_batches, batch_size, 4)); one gradient update per minibatch
+        for batch_states, batch_next_states, batch_columns in zip(*batches):
             rng, noise_key = jax.random.split(rng)
-            state, loss = train_step(state, batch_states, batch_next_states, batch_fallen, batch_cp, target_params,
-                                     noise_key)
+            state, loss = train_step(state, batch_states, batch_next_states, batch_columns, target_params, noise_key)
             #Update target network, target_params = tau * new_params + (1 - tau) * old_target_params, This is Polyak averaging (soft target update), which stabilizes TD learning.
             target_params = update_target_params(target_params, state.params, tau)
             #Accumulate total epoch loss
@@ -330,7 +364,9 @@ with tqdm(range(epochs), desc="Epoch") as pbar:
         pbar.set_postfix({"Loss": f"{epoch_avg:.2e}", "Hz": f"{1 / (time.time() - start_time):.2f}"})
         # keep the model that scores best on the held-out episodes
         if val_paths and (epoch + 1) % 25 == 0:
-            brier = np.mean((np.asarray(model.apply(state.params, val_states)) - val_outcome) ** 2)
+            # mps: the Brier score of V against the outcome; abs: the squared error of the score against
+            # the Monte Carlo reach-avoid value of the held-out episodes
+            brier = np.mean((SIGN * np.asarray(model.apply(state.params, val_states)) - val_outcome) ** 2)
             if brier < best_brier:
                 best_brier, best_params, best_epoch = brier, state.params, epoch + 1
             pbar.write(f"epoch {epoch + 1}: held-out Brier score {brier:.4f} (best {best_brier:.4f}, epoch {best_epoch})")
@@ -343,8 +379,8 @@ if best_params is not None:
 #           Save Model
 # ====================================
 with open(model_path, 'wb') as f:
-    pickle.dump({'model_params': state.params, 'mean': mean, 'std': std, 'method': args.method,
-                 'horizon': args.horizon if args.method == "abs" else None,
+    pickle.dump({'model_params': state.params, 'mean': mean, 'std': std, 'method': args.method, 'sign': SIGN,
+                 'gamma_ra': GAMMA_RA if args.method == "abs" else None,
                  'x_inv': args.x_inv if args.method == "mps" else None, 'obs_noise': args.obs_noise}, f)
 print("Model saved at", model_path)
 # the runtime format: the safety filter runs the ONNX export (value_function_manager.py)
@@ -357,9 +393,10 @@ export_onnx(model_path)
 # V(x) of every state, grouped by how its episode ended: the states of a falling episode, up to the
 # fall, against those of the episodes that recovered (evaluate_value_function.py has the details,
 # e.g. how long before a fall V drops)
-v_est = np.asarray(model.apply(state.params, states))
-print("\n===== Value Estimate Statistics =====")
-for name, mask in (("Episodes that fell", episode_fell), ("Episodes that recovered", ~episode_fell)):
-    print(f"{name:24s}: {mask.sum()} states, mean V(x) {v_est[mask].mean():.4f}, std {v_est[mask].std():.4f}, "
-          f"V(x) < 0.5 in {np.mean(v_est[mask] < 0.5):.1%}")
+v_est = SIGN * np.asarray(model.apply(state.params, states))
+level = 0.05 if args.method == "abs" else 0.5  # ABS's rule on the score; half the chance for mps
+print("\n===== Value Estimate Statistics (the model's output: V, or the score -V_RA) =====")
+for name, mask in (("Episodes that failed", episode_fell), ("Episodes that recovered", ~episode_fell)):
+    print(f"{name:24s}: {mask.sum()} states, mean {v_est[mask].mean():.4f}, std {v_est[mask].std():.4f}, "
+          f"below {level} in {np.mean(v_est[mask] < level):.1%}")
 print("=======================================")

@@ -6,8 +6,9 @@ saves its parameters (.pkl), export_onnx.py turns them into the ONNX the safety 
 (value_function_manager.py), and evaluate_value_function.py reads either.
 
 Input: 30 values, projected gravity and angular velocity in the base frame, joint positions, joint
-velocities (quadruped.q order), normalised with the training data's mean and std.  Output: V, the
-chance that the walking policy recovers.
+velocities (quadruped.q order), normalised with the training data's mean and std.  Output, higher
+safer: V, the chance that the safe policy reaches the invariant set (mps), or the safety score
+-V_RA, ABS's reach-avoid value negated (abs, the model's sign -1).
 """
 
 import pickle
@@ -45,6 +46,6 @@ def load_model(path):
 
 
 def value(model, states):
-    """V of states (n x 30) with a loaded model."""
+    """The output of a loaded model on states (n x 30), with its sign (abs: -V_RA)."""
     states = normalize_inputs(jnp.asarray(states, jnp.float32), model["mean"], model["std"])
-    return np.asarray(CriticNetwork().apply(model["model_params"], states))
+    return model.get("sign", 1.0) * np.asarray(CriticNetwork().apply(model["model_params"], states))
