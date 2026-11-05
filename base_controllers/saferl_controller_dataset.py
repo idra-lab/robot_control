@@ -29,6 +29,7 @@ in parallel with components/safe_rl/run_batches.sh, the whole pipeline with run_
 
 from __future__ import print_function
 import argparse
+import os
 import rospy as ros
 from base_controllers.utils.math_tools import *
 np.set_printoptions(threshold=np.inf, precision=5, linewidth=1000, suppress=True)
@@ -178,9 +179,16 @@ if __name__ == '__main__':
                              "push, capture off; fall_rule.py checks the fall rule and the capture hold on it")
     parser.add_argument("--speed", type=float, default=1.0,
                         help="x real time; an episode whose loop misses control ticks is discarded")
+    parser.add_argument("--motor-limit", action="store_true",
+                        help="Gazebo limits each joint's torque by its speed as Isaac Lab's DCMotor does (full torque at "
+                             "standstill, none at the URDF velocity limit; the robot description's motor_curve, "
+                             "LOCOSIM_MOTOR_SPEED_LIMIT)")
     parser.add_argument("--no-rviz", action="store_true")
     parser.add_argument("--gui", action="store_true", help="Gazebo GUI")
     args = parser.parse_args()
+    if args.motor_limit:
+        # read by xacro when roslaunch builds robot_description, before Gazebo starts
+        os.environ["LOCOSIM_MOTOR_SPEED_LIMIT"] = "true"
 
     p = SafeRLControllerDataset(args.robot)
     world_name = 'rl_flat.world'
