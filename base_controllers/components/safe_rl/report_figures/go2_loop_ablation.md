@@ -1,14 +1,14 @@
-240 episodes, the same in every arm; reference alone.
+239 episodes, the same in every arm; reference alone.
 
-| arm | fell | paper fall | knees | joint limits | total | switched | walking | needless | stopped | prevented | caused | switch s |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| alone | 48.3 | 15.4 | 7.9 | 37.1 | 43.8 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
-| mps | 27.1 | 7.5 | 13.8 | 28.3 | 30.4 | 52.5 | 0.0 | 14.5 | 46.8 | 55 | 4 | 0.30 |
-| mps_early | 33.8 | 11.2 | 14.6 | 28.7 | 30.4 | 46.2 | 0.4 | 7.3 | 27.9 | 42 | 7 | 0.34 |
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 47.3 | 33.5 | 9.6 | 7.1 | 0.8 | 0.4 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| mps | 31.4 | 4.2 | 0.4 | 4.6 | 22.6 | 22.2 | 63.2 | 1.3 | 33.3 | 35.1 | 42 | 4 | 0.24 |
+| mps_early | 43.5 | 16.3 | 6.7 | 5.4 | 21.8 | 17.2 | 46.4 | 1.3 | 11.1 | 9.0 | 19 | 10 | 0.40 |
 
-Episode by episode against mps (falls):
+Episode by episode against mps (failures):
 
-| arm | fell only with the arm | fell only with mps | p |
+| arm | failed only with the arm | failed only with mps | p |
 |---|---|---|---|
-| alone | 55 | 4 | 1.7e-12 |
-| mps_early | 37 | 21 | 0.0479 |
+| alone | 42 | 4 | 5.1e-09 |
+| mps_early | 39 | 10 | 3.85e-05 |

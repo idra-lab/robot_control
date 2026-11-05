@@ -1,22 +1,16 @@
-240 episodes, the same in every arm; reference alone.
+235 episodes, the same in every arm; reference alone.
 
-| arm | fell | paper fall | knees | joint limits | total | switched | walking | needless | stopped | prevented | caused | switch s |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| alone | 39.2 | 30.8 | 35.0 | 40.4 | 48.3 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
-| mps | 5.4 | 1.7 | 7.5 | 20.0 | 22.5 | 70.0 | 0.4 | 52.1 | 91.1 | 82 | 1 | 0.26 |
-| mps_early | 10.0 | 4.6 | 11.2 | 22.1 | 27.1 | 53.8 | 0.0 | 28.8 | 79.8 | 73 | 3 | 0.24 |
-| mps_polygon | 7.9 | 4.2 | 15.0 | 21.7 | 27.9 | 55.8 | 0.4 | 31.5 | 82.8 | 76 | 1 | 0.25 |
-| mps_obsnoise | 6.2 | 2.1 | 8.8 | 17.5 | 20.4 | 70.0 | 0.4 | 54.1 | 88.1 | 79 | 0 | 0.25 |
-| mps_nonoise | 5.8 | 2.1 | 6.2 | 16.7 | 19.6 | 64.2 | 0.0 | 41.8 | 89.6 | 81 | 1 | 0.23 |
-| mps_ou2 | 13.3 | 6.7 | 17.9 | 27.1 | 33.8 | 53.3 | 0.0 | 28.1 | 71.9 | 66 | 4 | 0.30 |
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 44.7 | 0.4 | 0.9 | 16.6 | 28.1 | 26.8 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| mps | 23.0 | 0.4 | 0.4 | 6.4 | 16.2 | 15.7 | 72.8 | 0.9 | 53.8 | 56.1 | 53 | 2 | 0.25 |
+| mps_early | 27.2 | 0.0 | 0.9 | 7.7 | 19.1 | 18.7 | 66.0 | 0.4 | 43.8 | 46.5 | 46 | 5 | 0.21 |
+| mps_polygon | 23.4 | 1.3 | 1.3 | 6.4 | 16.6 | 16.2 | 72.3 | 0.0 | 53.8 | 54.7 | 57 | 7 | 0.26 |
 
-Episode by episode against mps (falls):
+Episode by episode against mps (failures):
 
-| arm | fell only with the arm | fell only with mps | p |
+| arm | failed only with the arm | failed only with mps | p |
 |---|---|---|---|
-| alone | 82 | 1 | 1.74e-23 |
-| mps_early | 17 | 6 | 0.0347 |
-| mps_polygon | 14 | 8 | 0.286 |
-| mps_obsnoise | 6 | 4 | 0.754 |
-| mps_nonoise | 9 | 8 | 1 |
-| mps_ou2 | 24 | 5 | 0.000546 |
+| alone | 53 | 2 | 8.55e-14 |
+| mps_early | 26 | 16 | 0.164 |
+| mps_polygon | 17 | 16 | 1 |

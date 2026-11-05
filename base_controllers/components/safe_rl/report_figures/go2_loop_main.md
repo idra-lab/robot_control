@@ -1,20 +1,18 @@
 239 episodes, the same in every arm; reference alone.
 
-| arm | fell | paper fall | knees | joint limits | total | switched | walking | needless | stopped | prevented | caused | switch s |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| alone | 48.1 | 15.1 | 7.5 | 36.8 | 43.5 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
-| safe | 12.6 | 3.3 | 18.8 | 19.2 | 30.1 | 100.0 | 0.0 | 100.0 | 85.4 | 96 | 11 | - |
-| abs | 10.0 | 1.3 | 8.8 | 18.4 | 22.6 | 68.2 | 0.0 | 41.9 | 83.4 | 95 | 4 | 0.22 |
-| absfull | 8.4 | 4.2 | 7.5 | 15.1 | 18.8 | 66.5 | 0.0 | 38.7 | 87.4 | 97 | 2 | 0.17 |
-| mps | 26.8 | 7.1 | 13.4 | 28.0 | 30.1 | 52.3 | 0.0 | 14.5 | 47.2 | 55 | 4 | 0.30 |
-| mps_early | 33.5 | 10.9 | 14.2 | 28.5 | 30.1 | 46.0 | 0.4 | 7.3 | 28.2 | 42 | 7 | 0.34 |
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 47.3 | 33.5 | 9.6 | 7.1 | 0.8 | 0.4 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| safe | 31.0 | 6.3 | 1.3 | 11.3 | 13.4 | 12.6 | 100.0 | 0.0 | 100.0 | 49.4 | 65 | 26 | - |
+| abs | 18.8 | 2.9 | 0.4 | 4.2 | 12.6 | 11.3 | 55.6 | 0.0 | 18.3 | 48.1 | 69 | 1 | 0.21 |
+| abs_walk | 17.6 | 5.0 | 0.8 | 5.4 | 7.5 | 6.7 | 91.2 | 0.0 | 83.3 | 60.1 | 76 | 5 | 0.15 |
+| mps | 31.4 | 4.2 | 0.4 | 4.6 | 22.6 | 22.2 | 63.2 | 1.3 | 33.3 | 35.1 | 42 | 4 | 0.24 |
 
-Episode by episode against abs (falls):
+Episode by episode against abs (failures):
 
-| arm | fell only with the arm | fell only with abs | p |
+| arm | failed only with the arm | failed only with abs | p |
 |---|---|---|---|
-| alone | 95 | 4 | 1.24e-23 |
-| safe | 21 | 15 | 0.405 |
-| absfull | 12 | 16 | 0.572 |
-| mps | 48 | 8 | 4.69e-08 |
-| mps_early | 62 | 6 | 8.18e-13 |
+| alone | 69 | 1 | 1.2e-19 |
+| safe | 46 | 17 | 0.000337 |
+| abs_walk | 20 | 23 | 0.761 |
+| mps | 40 | 10 | 2.39e-05 |

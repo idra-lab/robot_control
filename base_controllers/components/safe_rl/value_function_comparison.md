@@ -1,221 +1,252 @@
-# Value function for model predictive shielding: ours (MPS) against the ABS baseline
+# Value function for model predictive shielding: ours (MPS) against ABS, corrected implementation
 
 2026-11-05 · riccardobussola · Aliengo and Go2, walking and safe policies `<robot>_velocity_{normal,safe}`
-· `robot_control` branch `feat/vf_abs_vs_mps` · every number from one run of `run_pipeline.sh`
-(`report_figures/<robot>_summary.txt`, tables `report_figures/<robot>_loop_*.md`)
+(not retrained) · `robot_control` branch `feat/vf_abs_vs_mps` · every number from one run of
+`run_pipeline.sh` (`report_figures/<robot>_summary.txt`, tables `report_figures/<robot>_loop_*.md`)
 
 ## Summary
 
 The safety filter switches the robot from the walking policy to the safe policy (zero-command
-recovery) when a learned value function V drops below a threshold. Two value functions come out of
-the same pipeline, data and network:
+recovery) when a learned value function says the robot is about to leave the safe set. This study
+compares the paper's value function with the ABS baseline (He et al., RSS 2024) on the same
+pushes. The first version of the study (morning of 2026-11-05) had inconsistencies in both methods;
+they were fixed without changing the paper's formulation (section 1) and everything was rerun.
 
-- **Ours (`mps`)**, the paper's: V(x) is the chance that the **safe policy**, started at x, brings the
-  robot to rest without a fall. Data: the walking policy, a push, a warm-up of 0–0.5 s, then the
-  safe policy recorded until a fall or rest. The filter walks while V ≥ threshold + L, L the margin
-  of Eq. (5).
-- **ABS (`abs`)**, the baseline: V(x) is about the **walking policy**: does it fall within 0.2 s (the
-  original ABS horizon, 10 samples). `absfull` is the same without the horizon.
+- **Ours (`mps`)**, the paper's: V(x) is the chance that the **safe policy**, started at x, reaches
+  rest (X_inv) without leaving the safe set; TD(0) on Eq. (4). The filter walks while V ≥ threshold
+  + L, and switches after 3 values in a row below it.
+- **ABS (`abs`)**, now as published: the discounted reach-avoid value of the **walking policy**
+  (Eq. 17 of the ABS paper): does it track its command again before leaving the safe set. The
+  filter switches at V_RA ≥ −0.05, on a single value.
 
-On 240 pushes per robot (150–250 N on the Aliengo), the same pushes for every configuration, with
-the safe policy kept once switched (the paper's protocol):
+**Failure** (leaving the safe set, the same in the data, the training and the evaluation): a fall
+(45° or base below 0.2 m), the base or a hip below 0.1 m, a knee below 3.5 cm, a joint past its
+URDF position (+0.01 rad) or velocity limit. Every episode ends at its first failure.
 
-| Falls (paper rule: trunk or hip < 0.1 m) | Aliengo | Go2 |
-|---|---|---|
-| Walking policy alone | 39 % (31 %) | 48 % (15 %) |
-| Safe policy alone, from the push | 5.2 % (0.9 %) | 12.6 % (3.3 %) |
-| ABS, walking rule | 17.6 % (6.9 %) | 10.0 % (1.3 %) |
-| ABS without horizon, walking rule | **3.4 %** (1.7 %) | **8.4 %** (4.2 %) |
-| Ours, walking rule | **5.2 %** (1.7 %) | 26.8 % (7.1 %) |
-| Ours, the paper's percentile rule | 19.7 % (8.2 %) | 20.1 % (9.6 %) |
+240 pushes per robot, the same for every configuration (150–250 N on the Aliengo), the safe policy
+kept once switched (the paper's protocol):
 
-- **The threshold matters most.** The paper's rule (the 1st percentile of V over the walking
-  policy's states) is fragile: it sits on the steep drop of V before a fall and moves with the share
-  of falling states (0.5th, 1st, 2nd percentiles 0.38, 0.77, 0.92 for one model; near 0 for
-  others). The **walking rule**, the highest threshold at which the filter never switches during
-  undisturbed walking (threshold + L = the lowest V over 11 min of walking), cuts the falls 1.1 to
-  6 times for every value function but ours on the Go2 (whose values on walking are low, below),
-  with switches during undisturbed walking in at most 0.4 % of the episodes.
-- **Aliengo, a strong safe policy (5 % falls alone):** ours brings the falls from 39 % to 5.2 %, the
-  safe policy's own level, statistically equal to ABS without horizon (3.4 %, McNemar p = 0.45) and
-  far better than ABS with its original horizon (17.6 %, p = 4e-7).
-- **Go2, a weak safe policy (12.6 % falls alone, 11 it causes):** ABS wins (8.4–10 % against 26.8 %,
-  p = 5e-8). Our value function is right about the backup: from some states of normal walking the
-  Go2's safe policy fails (lowest V on walking 0.44), so a threshold that never interrupts walking
-  is low and the filter acts late. The paper's method is only as protective as its backup policy;
-  ABS's assumption that the backup always recovers happens to hold better than the backup's real
-  record on the Go2.
-- **Ablations (Aliengo):** the margin L helps (9.2 % → 5.4 %, p = 0.06; Go2 31 % → 27 %); handing
-  over earlier in the data (from the push start) hurts under the walking rule (10 % against 5.2 %,
-  p = 0.03), it lowers V on walking; the support-polygon X_inv, sensor-noise augmentation and
-  noise-free training make no significant difference; training with 2 % torque noise is worse
-  (13.3 %, p = 0.0005). The original ABS 10-sample horizon hurts (17.6 % against 3.4 %).
-- **Deployed:** the filter loads, per robot, the value function that fell least: ours on the
-  Aliengo (`VF_mps_aliengo`), ABS without horizon on the Go2 (`VF_absfull_go2`), at the walking rule.
-  Switching back after 2 s, as the controllers do, costs 1–2 points of falls.
+| % of the pushes that failed | Aliengo | of which speed only | Go2 | of which speed only |
+|---|---|---|---|---|
+| Walking policy alone | 45.4 | 27.1 | 47.3 | 0.4 |
+| Safe policy alone, from the push | 20.4 | 15.8 | 31.0 | 12.6 |
+| **ABS**, its rule (V_RA ≥ −0.05) | **17.5** | 14.6 | **18.8** | 11.3 |
+| **Ours**, walking rule, 3 values in a row | 23.3 | 15.8 | 31.4 | 22.2 |
+| Ours, walking rule, 1 value | 20.4 | 15.0 | 28.5 | 20.0 |
+| Ours, the paper's percentile rule | 42.5 | 25.8 | 32.1 | 20.6 |
 
-![Falls against needless switches, both robots](report_figures/tradeoff.png)
+*Speed only: the first failure was a joint velocity past its URDF limit, with no fall, knee or
+position limit; always a knee, past 15.89 rad/s (Aliengo) or 15.70 rad/s (Go2).*
 
-*Each value function at its thresholds (fixed 0.5, 0.9, 0.95, 0.99, the paper's percentile rule
-circled, the walking rule starred), the walking policy alone and the safe policy alone. Lower left
-is better: fewer falls for fewer needless switches.*
+![Failures against needless switches, both robots](report_figures/tradeoff.png)
 
-## 1. The two value functions
+*Each filter at its threshold rule, the walking policy alone and the safe policy alone. Lower left is
+better: fewer failures for fewer needless switches (switches in pushes the walking policy survives
+alone).*
 
-| | Ours (`mps`) | ABS (`abs`, `absfull`) |
-|---|---|---|
-| Rollouts recorded | the safe policy, after a warm-up of the walking policy following the push | the walking policy, from the push end |
-| Switch times in the data | uniform 0–0.5 s after the push end; 20 % of the episodes during undisturbed walking (no push) | – |
-| Success (I_CP = 1) | static equilibrium: trunk and joint angular velocities < 0.1 rad/s, trunk linear velocity < 0.1 m/s, averaged over 0.2 s | capture point within 5 cm of the trunk for 0.5 s, or 3 s survived after the push |
-| Failure (I_fall = 1) | inclination > 45° or trunk < 0.2 m | the same |
-| Target | Eq. (4): (1 − I_fall)[(1 − I_CP) V(x') + I_CP] | the same; `abs`: only the last 10 transitions before a fall lead to it (the original ABS training) |
-| Episodes left out | ending in neither (timeout, 6 s after the switch: 1 of 985) | – |
-| Filter | V < threshold + L | V < threshold |
+- **Every filter halves the failures** of the walking policy (McNemar p < 1e-8), and the Go2 safe
+  policy saves the robot better than the walking policy (31 % against 47 %, p = 5e-5): no policy was
+  retrained.
+- **ABS has the fewest failures on both robots.** Against ours: Aliengo 17.5 % vs 23.3 % (p = 0.03),
+  Go2 18.8 % vs 31.4 % (p = 2e-5). Ours is as safe as the safe policy alone (Aliengo 23.3 vs 20.4,
+  p = 0.31; Go2 31.4 vs 31.0, p = 1) while handing over in only a third to a half of the pushes the
+  walking policy survives.
+- **Most failures are knee speed overshoots, right after the handover.** In Gazebo both robots'
+  safe policies, taking over a pushed robot, drive a knee past its velocity limit a median 0.13 s
+  after the switch (0.07–0.16 s); the Go2 walking policy alone almost never does (0.4 %). Gazebo
+  does not saturate the motors' speed; on the robot the motor would. **Without these speed-only
+  failures, ours equals ABS on the Go2** (9.2 % vs 7.5 %, p = 0.48) and halves the safe policy alone
+  (18.4 %, p = 0.001); on the Aliengo ABS stays ahead (2.9 % vs 7.5 %, p = 0.003), and ours on a
+  single value is close (5.4 %, p = 0.11). Section 6.
+- **The threshold rule matters most.** The paper's percentile rule lands at 0.03 on the Aliengo (42.5 %
+  failures, as bad as no filter); the walking rule (never switch on undisturbed walking) works on both.
+- **What the fixes changed.** Under the corrected safe set the comparison is the paper's Table I
+  metric; the first study's headline (Aliengo falls 39 % → 5 %) counted the fall rule only, and its
+  own "total failures" column already gave 48.5 % → 22.3 %. On the Go2 the walking-rule threshold of
+  ours went from 0.44 to 0.85 once single-sample dips were ignored (section 1).
+- **Deployed:** the filter now loads ABS on both robots (`VF_abs_<robot>`, `DEFAULT_MODEL` in
+  `value_function_manager.py`); ours runs with `--filter-model`.
 
-Both take the same 30 inputs, all measured on the robot (projected gravity and angular velocity from
-the IMU, joint positions and velocities), the same network (512–256–128, layer norm, ELU, linear
-output), the same TD(0) training (Adam 3e-4, target network τ = 0.01, early stopped on the held-out
-Brier score) and the same ONNX runtime (0.015 ms per evaluation).
+## 1. What changed since the first study
 
-**Static equilibrium, averaged.** With the instantaneous check the robot never reached X_inv: at rest
-the safe policy keeps correcting and the torque noise shakes the joints, so the fastest of the 12
-joints moves at 0.1–0.3 rad/s at any instant (0.1–0.2 without noise). Averaged over 0.2 s, every
-episode that does not fall reaches rest, a median 1.4 s (Aliengo) and 1.3 s (Go2) after the switch.
+The first comparison (commits up to `297857e`) had the right pipeline but some wrong pieces. They
+were fixed without changing the paper's formulation.
 
-## 2. Pipeline
+| | Before | Now | Why |
+|---|---|---|---|
+| ABS baseline | V trained on the walking policy with our Eq. (4) labels and a 10-sample "horizon" before a fall (an approximation, plus a variant without it) | ABS as published (Eq. 17): discounted reach-avoid value, γ = 0.999999; failure margin ζ = ±1, softened to −0.8 … 1.0 over the 10 states before a failure; target margin l = tanh(log(e/σ)), e the walking policy's tracking error, σ = 0.2 m/s; last state terminal; switch at V_RA ≥ −0.05 on a single value | the baseline has to be the published method; the 10-sample split imitated ABS's ζ softening without the reach-avoid equation or a target |
+| ABS data | from the push end; episodes ended at a "capture" (capture point within 5 cm of the base) | the walking policy's whole rollout from 1 s; episodes end at a failure or 3 s after the push | ABS rolls out its agile policy whole; the capture label was a speed check, not capturability |
+| Safe set (I_fall) | the fall rule only (45°, base below 0.2 m); knees and joint limits only counted in the evaluation | the fall rule, the base or a hip below 0.1 m, a knee below 3.5 cm, a joint past its URDF limit (position + 0.01 rad, velocity); the episode ends at the first | the paper's X_safe excludes knees and joint limits, and its Table I counts them as failures: the labels now match what the evaluation counts |
+| X_inv (I_CP) | trunk and joint velocities below 0.1, averaged over 0.2 s | the robot on its four feet, under 10° of tilt, above 0.75 × its standing height, still (averaged over 0.5 s), held 0.3 s | velocities alone accept a robot lying still on its knees; the hold approximates invariance |
+| Handovers in our data | 0–0.5 s after the push end; 20 % during undisturbed walking; timeout 6 s | 0–0.5 s after the push end; 30 % during undisturbed walking; timeout 8 s (stricter X_inv takes longer) | handing over from the push start was tried and made worse (section 5, ablation) |
+| Margin L (Eq. 5) | states 0.01 s apart | states h apart, h the time from the first value below the level to the safe policy acting: 2 more evaluations + one policy step + actuator delay = 0.05 s | V must stay safe until the backup actually acts |
+| Threshold (walking rule) | the lowest V over the walking states; switch on 1 value | switch after 3 values in a row; threshold from the lowest of the largest of 3 consecutive values | on the Go2, single-sample dips (lowest 0.72, 99.9 % of walking states above 0.92) set the threshold at 0.44; with 3 in a row it is 0.85. The "weak Go2 safe policy" was this artefact: the safe policy never failed taking over from walking (0 of 163) |
+| Controller | V ignored for 1 s after handing back (the paper's robot setup) | V checked all the time | ignoring V leaves the walking policy unshielded; the 2 s of V above the level before handing back already prevent chattering |
+| Evaluation | falls by the fall rule, other failures reported apart | failures = leaving the safe set; the first failure ends the episode and is reported by kind, with "speed only" | consistency with the training labels and with Table I |
 
-`run_pipeline.sh`, per robot, in Gazebo in real time (`report_figures/<robot>_summary.txt`):
+Unchanged: the paper's TD target (Eq. 4) for our value function, the network, the training, the
+walking and safe policies (no retraining), the push protocol and the torque noise.
 
-- **Episodes.** Reset standing still in the policy's posture, a command uniform in ±0.5, one push 2–3
-  s after the start: a force of mass × kick / 0.2 s on the trunk for 0.2 s, the kick uniform in
-  0–3 m/s (Aliengo) or 0–2.5 m/s (Go2), the direction uniform; about 45 % of the pushes fall.
-- **Torque noise.** An Ornstein-Uhlenbeck process per joint, std 4 % of the joint's torque limit,
-  time constant 0.05 s, throughout the episode. The white noise of 2026-10-29 (10 Nm per 2 ms tick)
-  shook the robot so much that it never came to rest (max joint speed at rest 0.9–1.1 rad/s).
-- **Fall rule.** 240 episodes per robot run to the ground: every fall went past 85° (Aliengo) and 50°
-  (Go2); the Aliengo recovered once from 51° (two recoveries past 25° out of 154), the Go2 never past
-  23°, the trunk always above 0.22 m. 45° labels one Aliengo recovery a fall; 60° would sit in the gap.
-- **Data.** Per method 420 training episodes (70 held out) and 140 test episodes; of the 560 `mps`
-  episodes 63 (Aliengo) and 72 (Go2) fell during the warm-up, before the switch, and record nothing.
+## 2. Implementation challenges
+
+- **Getting the robot to "rest" in simulation.** The paper's X_inv (velocities below 0.1) is never met
+  at an instant: the safe policy keeps correcting and the torque noise shakes the joints (the
+  fastest joint at 0.1–0.3 rad/s). Averages over 0.2 s were at the edge once a 0.3 s hold was
+  required; 0.5 s separates "still" from "moving". The safe policy now reaches X_inv a median 2.7 s
+  after the switch (90th percentile 5.3–5.9 s), and 11 (Aliengo) and 22 (Go2) of about 450 episodes
+  time out at 8 s (left out of the training, as they have no target). With the old white torque
+  noise (10 Nm per 2 ms tick) the robot never came to rest at all.
+- **The threshold.** The paper's percentile rule depends on the share of failing states in the data
+  and landed between 0.03 and 0.63 for our models (below zero on ABS's score); on the Aliengo it
+  makes the filter useless. The
+  walking rule is what made the filters work, and it has to ignore single-sample dips of V, or a few
+  outlier states decide it (the Go2).
+- **Where the value function is valid.** V is only accurate on states its data started the safe
+  policy from, and the filter queries it everywhere. Handing over during the push looks like the fix,
+  but the push's onset is not in the state: walking states then get the outcomes of pushes that have
+  just started, V on walking drops (Go2: lowest walking V 0.03, margin 0.81), and the filter is
+  worse (Go2 43.5 % against 31.4 %).
+- **ABS's target for push recovery.** ABS's target is reaching a goal position; for a velocity-tracking
+  walking policy the analogue is tracking the command again, which needs the tracking error smoothed
+  over the gait (0.5 s), a scale σ (0.2 m/s), and the score −V_RA exported with the same "above the
+  threshold walks" convention as ours.
+- **Consistent failure labels.** Knee contact and joint limits as failures need the knee and hip
+  heights from the robot's kinematics at the filter's rate, the URDF limits per joint, and an episode
+  that ends at its first failure, in the data and in the evaluation alike.
+- **Simulated actuators.** Gazebo does not enforce the URDF velocity limits; a recovering policy drives
+  the knees past them, which a real motor could not. Once joint limits are in the safe set, this
+  decides most of the comparison (section 6).
+- **Statistics.** Every configuration runs the same 240 pushes (paired by seed), and arms are compared
+  episode by episode (McNemar); with one Gazebo instance per container in real time, an arm takes
+  about 8 minutes, the whole study about 6 h per robot.
+
+## 3. Pipeline
+
+`run_pipeline.sh`, per robot, in Gazebo in real time:
+
+- **Episodes.** Reset standing still, a command uniform in ±0.5, one push 2–3 s after the start: a
+  force of mass × kick / 0.2 s on the trunk for 0.2 s, the kick uniform in 0–3 m/s (Aliengo) or
+  0–2.5 m/s (Go2), the direction uniform. Torque noise: an Ornstein-Uhlenbeck process per joint, std
+  4 % of the torque limit, time constant 0.05 s.
+- **Data.** Per method 420 training episodes (70 held out for early stopping) and 140 test episodes.
+  ABS: 560 rollouts of the walking policy (Aliengo 254 failed, Go2 220). Ours: 440 (Aliengo) and 487
+  (Go2) kept after the episodes that failed before the handover; 149 and 163 of them hand over during
+  undisturbed walking, none of which failed.
 - **Calibration runs**, the walking policy alone, every state at 100 Hz: 80 episodes of 20 s with one
-  push of the evaluation's kicks (11 min of undisturbed walking) for the threshold, 240 with light
-  pushes for L.
+  push (11 min of undisturbed walking) for the threshold, 240 with light pushes for L.
 - **Closed loop.** 240 pushes per configuration, paired by seed: kicks 1.2–2.0 m/s on the Aliengo
-  (150–250 N, the paper's range) and 1.0–1.8 m/s on the Go2, 5 magnitudes, random direction and
-  time; 7 s per episode; the filter at 100 Hz from 1 s, one value below the level to switch, the safe
-  policy kept for the rest of the episode. A configuration whose loop missed control ticks
-  discards that episode in all (233–240 kept).
+  (150–250 N, the paper's range) and 1.0–1.8 m/s on the Go2, 5 magnitudes, random direction and time;
+  7 s per episode; the filter at 100 Hz from 1 s; the safe policy kept for the rest of the episode.
+  An episode whose loop missed control ticks is left out of every arm (235–240 kept).
 
-## 3. Offline evaluation (held-out test episodes)
+## 4. Offline evaluation and calibration
 
-| | AUC 0.2 s after the push | Brier | Falls warned at V < 0.5, median lead | False alarms (light kick / any) |
-|---|---|---|---|---|
-| Aliengo ABS | 0.72 | 0.125 | 64/64, 0.20 s | 0/44, 1/76 |
-| Aliengo ABS no horizon | 0.96 | 0.060 | 64/64, 0.38 s | 1/44, 8/76 |
-| Aliengo ours | 0.99 | 0.006 | 19/21, 0.12 s | 0/67, 0/108 |
-| Go2 ABS | 0.95 | 0.088 | 69/69, 0.20 s | 0/40, 0/71 |
-| Go2 ABS no horizon | 0.93 | 0.056 | 69/69, 0.32 s | 0/40, 8/71 |
-| Go2 ours | 0.99 | 0.002 | 19/23, 0.14 s | 0/64, 4/103 |
+| | AUC 0.2 s after the push | threshold (+ L) | rule | lowest V on walking (1 value / 3 in a row) | percentile rule |
+|---|---|---|---|---|---|
+| Aliengo ABS (score −V_RA) | 0.970 | 0.05 | ABS | 0.60 / 0.68 | −0.87 |
+| Aliengo ours | 0.882 | 0.986 + 0.004 | walking, 3 | 0.988 / 0.991 | 0.03 |
+| Aliengo ours, early handovers | 0.994 | 0.333 + 0.162 | walking, 3 | 0.42 / 0.49 | 0.08 |
+| Aliengo ours, capture-point X_inv | 0.979 | 0.960 + 0.009 | walking, 3 | 0.953 / 0.969 | 0.18 |
+| Go2 ABS (score −V_RA) | 0.977 | 0.05 | ABS | 0.76 / 0.77 | −0.22 |
+| Go2 ours | 0.990 | 0.850 + 0.040 | walking, 3 | 0.72 / 0.89 | 0.63 |
+| Go2 ours, early handovers | – | −0.779 + 0.807 | walking, 3 | −0.01 / 0.03 | 0.10 |
 
-ABS is scored against the walking policy's outcome, ours against the safe policy's, so the rows
-are not comparable across methods; the closed loop is. Ours is well calibrated (Aliengo: V 0.9–1.0
-→ 99 % recovered, V below 0.6 → none). ABS's horizon makes it blind until 0.2 s before a fall
-(AUC 0.72 on the Aliengo).
-
-## 4. Calibration
-
-| Threshold (+ L) | walking rule | percentile rule | L (Eq. 5) | lowest V on walking |
-|---|---|---|---|---|
-| Aliengo ABS | 0.986 | 0.976 | (0.002) | 0.986 |
-| Aliengo ABS no horizon | 0.772 | 0.022 | (0.022) | 0.772 |
-| Aliengo ours | 0.898 + 0.023 | 0.766 + 0.023 | 0.023 | 0.921 |
-| Aliengo ours, early | 0.574 + 0.052 | 0.212 + 0.052 | 0.052 | 0.626 |
-| Go2 ABS | 0.944 | 0.931 | (0.013) | 0.944 |
-| Go2 ABS no horizon | 0.964 | 0.006 | (0.002) | 0.964 |
-| Go2 ours | 0.439 + 0.004 | 0.909 + 0.004 | 0.004 | 0.443 |
-| Go2 ours, early | −0.079 + 0.113 | 0.396 + 0.113 | 0.113 | 0.034 |
-
-ABS uses no margin (in brackets, Eq. 5 for reference). The percentile rule lands anywhere from
-0.006 to 0.976, sometimes above walking values (Go2 ours: 1.3 % switches while walking). On the Go2
-our value function drops to 0.44 on some walking states, 0.03 for the early variant: from there the
-safe policy is predicted to fail, and a threshold that never interrupts walking has to be lower.
+ABS is scored against the walking policy's outcome, ours against the safe policy's, so the AUCs are
+not comparable across methods; the closed loop is. Ours is well calibrated (Go2: V 0.9–1.0 0.3 s
+after the push → 98 % recovered, V below 0.2 → 6 %; Brier 0.002). ABS uses no margin; for ours L is
+small (0.004–0.04), except for the early-handover models, whose V moves fast on walking states.
 
 ## 5. Closed loop
 
 All in % of the episodes (needless: of those the walking policy alone survived; stopped: of those
-the filter switched in, the robot brought to rest). Tables with the paired McNemar tests in
+the filter switched in, the robot brought to rest). Paired McNemar tests in
 `report_figures/<robot>_loop_<table>.md`.
 
-**Main (walking rule)**
+**Main**
 
-| | Aliengo fell | paper fall | total failures | switched | needless | stopped | Go2 fell | paper fall | total failures | switched | needless | stopped |
+| | Aliengo failed | speed only | switched | needless | stopped | switch s | Go2 failed | speed only | switched | needless | stopped | switch s |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Walking alone | 39.1 | 30.5 | 48.5 | – | – | – | 48.1 | 15.1 | 43.5 | – | – | – |
-| Safe alone | 5.2 | 0.9 | 22.7 | 100 | 100 | 93 | 12.6 | 3.3 | 30.1 | 100 | 100 | 85 |
-| ABS | 17.6 | 6.9 | 36.1 | 46 | 19 | 62 | 10.0 | 1.3 | 22.6 | 68 | 42 | 83 |
-| ABS no horizon | 3.4 | 1.7 | 13.3 | 62 | 40 | 95 | 8.4 | 4.2 | 18.8 | 67 | 39 | 87 |
-| Ours | 5.2 | 1.7 | 22.3 | 70 | 52 | 91 | 26.8 | 7.1 | 30.1 | 52 | 15 | 47 |
-| Ours, early | 9.9 | 4.3 | 27.5 | 54 | 29 | 81 | 33.5 | 10.9 | 30.1 | 46 | 7 | 28 |
+| Walking alone | 45.4 | 27.1 | – | – | – | – | 47.3 | 0.4 | – | – | – | – |
+| Safe alone | 20.4 | 15.8 | 100 | 100 | 62 | – | 31.0 | 12.6 | 100 | 100 | 49 | – |
+| ABS, its rule | 17.5 | 14.6 | 63 | 36 | 51 | 0.20 | 18.8 | 11.3 | 56 | 18 | 48 | 0.21 |
+| ABS, walking rule (3 in a row) | 18.3 | 15.0 | 74 | 53 | 57 | 0.16 | 17.6 | 6.7 | 91 | 83 | 60 | 0.15 |
+| Ours | 23.3 | 15.8 | 73 | 54 | 56 | 0.25 | 31.4 | 22.2 | 63 | 33 | 35 | 0.24 |
 
-Total failures: a paper fall, a knee below 3.5 cm or a joint past its URDF limit (Table I of the
-paper). Switches during undisturbed walking: 0.4 % (Aliengo ours), otherwise 0–0.4 %.
+Switch s: the filter's median switch time after the push start (the push lasts 0.2 s). Switches
+during undisturbed walking: 0–1.3 % of the episodes. The walking rule puts ABS's threshold at 0.68
+(Aliengo) and 0.77 (Go2) on its score instead of 0.05: it switches earlier (0.15 s) and far more
+needlessly (Go2 83 %), for the same failures.
 
-**Threshold rule (falls, walking rule → percentile rule):** Aliengo ABS 17.6 → 19.3, ABS no horizon
-3.4 → 21.5, ours 5.2 → 19.7, ours early 9.9 → 18.9; Go2 ABS 10.0 → 14.6, no horizon 8.4 → 11.7,
-ours 26.8 → 20.1, early 33.5 → 21.8 (on the Go2 the percentile rule is higher for ours, at the cost of
-switches while walking).
+**Ablations of ours** (failures, p against ours with the same episodes):
 
-**Fixed thresholds (Aliengo, falls / needless):** ABS 0.5: 34 % / 9 %, 0.99: 13 % / 28 %; ours 0.5:
-37 % / 10 %, 0.9: 9 % / 39 %, 0.95: 6 % / 82 % with 8 % switching while walking. ![Aliengo](report_figures/aliengo_tradeoff.png)
+| | Aliengo | p | Go2 | p |
+|---|---|---|---|---|
+| Ours (walking rule, 3 values in a row, margin L) | 23.3 | – | 31.4 | – |
+| Switch on 1 value (threshold from the single lowest walking V) | 20.4 | 0.27 | 28.5 | 0.28 |
+| No margin (L = 0) | 22.1 | 0.71 | 31.8 | 1.0 |
+| The paper's percentile rule | 42.5 | 1e-10 | 32.1 | 0.86 |
+| Early handovers in the data (0–0.7 s from the push start) | 27.2 | 0.16 | 43.5 | 4e-5 |
+| X_inv: capture point in the support polygon | 23.4 | 1.0 | – | – |
+| Switching back after 2 s above the level (the controllers) | 23.8 | – | 32.2 | – |
 
-**Margin L:** Aliengo ours 5.4 % with L, 9.2 % without (p = 0.06); at the percentile threshold 19.6 %
-and 24.2 %. Go2 27.1 % and 31.2 %.
-
-**Switching back after 2 s** (the controllers): Aliengo ABS 17.6 → 19.7, ours 5.2 → 6.9 (paper fall
-1.7 → 0); Go2 ABS 10.0 → 11.3, ours 26.8 → 29.3; the robot is at rest at the end in fewer episodes,
-as it walks again.
-
-**Ablations of ours (Aliengo, walking rule, falls; p against ours):**
-
-| | falls | paper fall | total | needless | p |
-|---|---|---|---|---|---|
-| Ours (static X_inv, 4 % OU noise) | 5.4 | 1.7 | 22.5 | 52 | – |
-| Early handovers (from the push start) | 10.0 | 4.6 | 27.1 | 29 | 0.035 |
-| X_inv: capture point in the support polygon | 7.9 | 4.2 | 27.9 | 32 | 0.29 |
-| Sensor-noise augmentation (`--obs-noise 1`) | 6.2 | 2.1 | 20.4 | 54 | 0.75 |
-| Trained without torque noise | 5.8 | 2.1 | 19.6 | 42 | 1.0 |
-| Trained with 2 % torque noise | 13.3 | 6.7 | 33.8 | 28 | 0.0005 |
-
-At the percentile rule the same ablations give 18.8–26.7 %, the differences driven by where each
-model's percentile lands.
-
-**Early handovers, at a fixed threshold.** At 0.9 the early variant reaches 4.3 % falls, 0 caused,
-but switches during undisturbed walking in 45 % of the episodes: it rates walking lower, and 0.9 is
-inside its walking range. Learning to switch during the push needs that data, but its walking states
-then look riskier; under the walking rule it is worse than ours.
+Switching back costs ABS 4 points (Aliengo 17.5 → 21.7, Go2 18.8 → 22.2) and ours about 1, and
+halves the robots at rest at the end, as they walk again. The margin and the 3-value rule make no
+significant difference: with the threshold from the walking rule, the filter switches a median
+0.03–0.06 s after the push ends either way.
 
 ![Aliengo closed loop](report_figures/aliengo_loop_main.png)
 ![Go2 closed loop](report_figures/go2_loop_main.png)
 
-## 6. What this means for the paper
+## 6. Knee speed limits: where the failures come from
 
-- The paper's percentile rule should be replaced (or complemented) by the walking rule: it is what
-  makes the filters work, for ours and for ABS.
-- Ours matches the best filter and the safe policy itself when the safe policy is good (Aliengo),
-  and is the only one that tells when it is not (Go2): its V on walking states is a direct measure
-  of how much the backup can be trusted. The claim that MPS "guarantees safety without any
-  assumption on the backup policy" needs softening: the filter can only be as good as the backup.
-- ABS without its 0.2 s horizon is a much stronger baseline than with it, and should be reported.
-- The margin L of Eq. (5) helps; it is small (0.004–0.05) and depends on the model.
+Every speed-only failure of a filter comes after its switch: a median 0.13 s later on the Go2 and
+0.12–0.20 s on the Aliengo, while the robot still carries the push's momentum. In our training data
+the same happens to 10–16 % of the pushed handovers, and never on a handover during walking. The
+Go2 walking policy alone almost never overshoots (0.4 %); the Aliengo walking policy does (27 %).
+
+| % failed, all / without speed-only | Aliengo | Go2 |
+|---|---|---|
+| Walking alone | 45.4 / 18.3 | 47.3 / 46.9 |
+| Safe alone | 20.4 / 4.6 | 31.0 / 18.4 |
+| ABS | 17.5 / 2.9 | 18.8 / 7.5 |
+| Ours | 23.3 / 7.5 | 31.4 / 9.2 |
+| Ours, 1 value | 20.4 / 5.4 | 28.5 / 8.4 |
+
+The "without" column is a lower bound: those episodes ended at the overshoot, and some would have
+failed later. On the Go2 ours hands over in more pushes than ABS (63 % against 56 %) and in more of
+those the walking policy would have survived (33 % against 18 %); each handover of a pushed robot
+risks an overshoot, so ours collects twice as many (22 % against 11 %). Without them ours equals ABS
+(p = 0.48).
+
+Gazebo integrates the commanded torques with no speed limit; a real motor's torque falls to zero at
+its maximum speed. Whether the overshoots are failures on the robot depends on that, and they
+dominate the comparison. Options, from cheapest:
+
+1. Report both columns (as here) and state that the velocity limits are those of the URDF.
+2. Model the motors' torque-speed curve in Gazebo (the ros_impedance_controller), so overshoots
+   cannot happen and the policies face the real limit.
+3. Retrain the safe policies with a joint-speed penalty or limit (the Go2's in particular).
+
+## 7. What this means for the paper
+
+- With the corrected safe set the paper's own metric (Table I) favours ABS on both robots; the paper's
+  claim that ours reduces falls from 39 % to 5 % no longer holds and has to go.
+- Ours is as safe as its backup policy and hands over far less often; it can be no safer than the
+  backup, and here the backups themselves overshoot the knee speed limits. The comparison with ABS
+  is close only once those overshoots are left out (Go2).
+- The walking rule should replace the percentile rule: the percentile rule makes the Aliengo filter
+  useless (42.5 %).
+- ABS should be described and implemented as the published reach-avoid value.
 - `paper/` has the proposed text, tables and figures, marked `\Riccardo{}` in orange, and the diff.
 
-## 7. Reproduce
+## 8. Reproduce
 
 ```bash
 cd ~/trento_lab_home/ros_ws/src/locosim/robot_control/base_controllers
-components/safe_rl/run_pipeline.sh                    # both robots, about 6 h on 24 cores
+components/safe_rl/run_pipeline.sh                    # both robots, about 6 h each
 components/safe_rl/run_in_image.sh python3 components/safe_rl/plot_tradeoff.py
 ```
 
-The datasets (`observation_datasets/<robot>/`, about 1.1 GB) are not in the repository; the models
-(`value_function/models/VF_{abs,absfull,mps,mps_early}_<robot>.*`) are.
+The datasets (`value_function/observation_datasets/<robot>/`) are not in the repository; the models
+(`value_function/models/VF_{abs,mps,mps_early}_<robot>.*`, `VF_mps_polygon_aliengo.*`) and the figures
+are.
