@@ -1,7 +1,7 @@
 """V of the safety filter's value function on a recorded Aliengo run: the joint states
 (/aliengo/joint_states) and the Pronto odometry (/state_estimator_pronto/odom) of a playing bag go
 through ValueFunctionManager (models/VF_push_end_aliengo.onnx, components/safe_rl), which prints
-when V is below its threshold.
+when V is below its threshold plus margin.
 
     rosbag play <bag> &
     python3 vf_rosbag.py
@@ -99,7 +99,7 @@ while not ros.is_shutdown():
     print('q', q_prev, q)
     print('qd', qd_prev, qd)'''
     #if np.any(ang_vel_b != ang_vel_b_prev) or np.any(proj_gravity_b != proj_gravity_b_prev) or np.any(q != q_prev) or np.any(qd != qd_prev):
-    isrec, V_safe = vf.computeValueFnc(body_ang_vel=ang_vel_b, proj_gravity=proj_gravity_b, joint_pos=pubSub.q, joint_vel=pubSub.qd, vf_additional_term = 0.0)
+    isrec, V_safe = vf.computeValueFnc(body_ang_vel=ang_vel_b, proj_gravity=proj_gravity_b, joint_pos=pubSub.q, joint_vel=pubSub.qd)
     vf.VF = True
     vf.count = 0
     vf.count_back = 0
