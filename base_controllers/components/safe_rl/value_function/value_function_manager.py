@@ -41,13 +41,15 @@ class ValueFunctionManager:
     policy has to.  It switches to the safe policy after min_switch evaluations in a row below the
     threshold (plus margin), and back after min_back in a row above it (never with min_back inf, as
     in the paper's simulations).  The counts are evaluations, so the times depend on the caller's
-    rate: at 100 Hz the defaults are 0.01 s and 2 s.
+    rate: at 100 Hz, min_switch 3 is 0.03 s and min_back 200 is 2 s.
 
-    threshold and margin default to the model's .json, else to DEFAULT_THRESHOLD and 0.  The value
+    threshold, margin and min_switch default to the model's .json (calibrate_filter.py), else to
+    DEFAULT_THRESHOLD, 0 and 1.  For the ABS baseline the model outputs the score -V_RA, so the same
+    rule applies (ABS's own: recovery when V_RA >= -0.05, a threshold of 0.05).  The value
     function runs as ONNX (export_onnx.py), on onnxruntime with one thread like the policies, in
     simulation and on the robot; training and its tools use JAX (network.py)."""
 
-    def __init__(self, robot_name="aliengo", model_path=None, threshold=None, margin=None, min_switch=1,
+    def __init__(self, robot_name="aliengo", model_path=None, threshold=None, margin=None, min_switch=None,
                  min_back=200):
         model_path = default_model(robot_name) if model_path is None else model_path
         if not model_path.endswith(".onnx"):
@@ -58,12 +60,14 @@ class ValueFunctionManager:
         if margin is None:
             # the margin is the paper's (mps); the ABS baseline switches on the threshold alone
             margin = settings.get("margin", 0.0) if settings.get("method") != "abs" else 0.0
+        if min_switch is None:
+            min_switch = settings.get("min_switch", 1)
         options = ort.SessionOptions()
         options.intra_op_num_threads = 1
         options.inter_op_num_threads = 1
         self.session = ort.InferenceSession(model_path, sess_options=options, providers=["CPUExecutionProvider"])
         self._obs = np.zeros((1, STATE), dtype=np.float32)
-        print(f"Loaded value function {model_path}, threshold {threshold}, margin {margin}")
+        print(f"Loaded value function {model_path}, threshold {threshold}, margin {margin}, min_switch {min_switch}")
         self.model_path = model_path
         self.threshold = threshold
         self.margin = margin

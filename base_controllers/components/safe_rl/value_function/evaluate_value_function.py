@@ -60,6 +60,8 @@ def main():
     parser.add_argument("--model", required=True, help="the value function: .onnx (what the filter runs) or .pkl")
     parser.add_argument("--data", nargs="+", required=True)
     parser.add_argument("--plot", help="save V over time, V against the kick and the calibration here")
+    parser.add_argument("--thresholds", type=float, nargs="+", default=list(THRESHOLDS),
+                        help="levels for the warnings (ABS's score: e.g. 0.05 0.2 0.5)")
     parser.add_argument("--light-kick", type=float, default=1.0,
                         help="m/s; below it hardly any episode falls (1 %% for both robots), so an alarm is false")
     args = parser.parse_args()
@@ -93,14 +95,14 @@ def main():
 
     tail = np.concatenate([r["v"][r["t"] > r["end"] - 1.0] for r in runs if not r["fell"]])
     print(f"\nWalking: recovered episodes' last second, V {tail.mean():.3f} (min {tail.min():.3f}, "
-          f"below {', '.join(f'{thr}: {np.mean(tail < thr):.1%}' for thr in THRESHOLDS)})")
+          f"below {', '.join(f'{thr}: {np.mean(tail < thr):.1%}' for thr in args.thresholds)})")
     before = np.array([r["v"][0] for r in runs if r["t"][0] < SAMPLE_DT])
     if len(before):
         print(f"  the state before the push acts (datasets recorded from the push start), V {before.mean():.3f} "
               f"(min {before.min():.3f})")
 
     outcome = np.concatenate([np.full(len(r["v"]), 0.0 if r["fell"] else 1.0) for r in runs])
-    print(f"Brier score, V against the outcome of its episode: "
+    print(f"Brier score (a probability's; for ABS's score only indicative), V against the outcome of its episode: "
           f"{np.mean((np.concatenate([r['v'] for r in runs]) - outcome) ** 2):.4f} over {len(outcome)} states")
 
     print("\nSeparation, ROC AUC of V (fell vs recovered) on the episodes still running:")
@@ -120,7 +122,7 @@ def main():
     print(f"\nAs a filter, V below the threshold (false alarm: in a recovered episode, after a kick below "
           f"{args.light_kick} m/s or any):")
     light = np.array([r["kick"] < args.light_kick for r in runs]) & ~fell
-    for thr in THRESHOLDS:
+    for thr in args.thresholds:
         leads, alarmed = [], []
         for r in runs:
             # the last sample is the fall itself
