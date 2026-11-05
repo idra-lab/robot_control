@@ -16,9 +16,11 @@ as in training, pushes it once and labels how it ends (DatasetManager, dataset_m
     python3 saferl_controller_dataset.py --robot go2 ... --record-all --episode-length 20 --sample-rate 100
                                                                     # calibration runs: calibrate_filter.py
 
---method abs records the walking policy from the push end to the episode end (ABS, the baseline);
---method mps lets the walking policy run for a warm-up after the push, then hands over to the safe
-policy and records it from there to a fall or the invariant set (the paper's value function).
+--method abs records the walking policy's whole rollout with ABS's reach-avoid margins (the
+baseline); --method mps lets the walking policy run for a warm-up after the push, then hands over
+to the safe policy and records it from there until it leaves the safe set or reaches the
+invariant set (the paper's value function).  An episode ends leaving the safe set: a fall, a knee on
+the ground or a joint past its limit (dataset_manager.py, failures).
 
 The same --seed gives the same commands and pushes, so a run with --filter compares episode by
 episode with one without (compare_filter.py).  It runs in real time (--speed); several batches run
@@ -140,10 +142,10 @@ if __name__ == '__main__':
                         help="abs: the walking policy throughout; mps: the safe policy after a warm-up (dataset_manager.py)")
     parser.add_argument("--switch-window", type=float, nargs=2, default=None, metavar=("MIN", "MAX"),
                         help="mps: warm-up after the push end before the safe policy takes over, s (default 0 0.5)")
-    parser.add_argument("--switch-from", choices=("push_end", "push_start"), default="push_end",
+    parser.add_argument("--switch-from", choices=("push_end", "push_start"), default=None,
                         help="mps: the warm-up counts from the push end (default) or start")
     parser.add_argument("--walk-switch", type=float, default=None,
-                        help="mps: share of the episodes switching during undisturbed walking (default 0.2)")
+                        help="mps: share of the episodes switching during undisturbed walking (default 0.3)")
     parser.add_argument("--noise-model", default="ou", choices=("ou", "white", "none"),
                         help="torque noise: ou, correlated, throughout; white, per tick from the push on (dataset_manager.py)")
     parser.add_argument("--noise", type=float, default=None,
@@ -161,6 +163,8 @@ if __name__ == '__main__':
                         help="safety filter threshold (default: the model's .json, else per robot)")
     parser.add_argument("--margin", type=float, default=None,
                         help="safety filter margin L, V < threshold + L switches (default: the model's .json, else 0)")
+    parser.add_argument("--min-switch", type=int, default=None,
+                        help="safety filter: evaluations in a row below the level to switch (default the model's .json)")
     parser.add_argument("--no-switch-back", action="store_true",
                         help="the safety filter keeps the safe policy once it switched (the paper's simulations)")
     parser.add_argument("--record-all", action="store_true", help="record from 1 s on, walking included")
@@ -187,7 +191,8 @@ if __name__ == '__main__':
     dm.record_from_push_start = args.from_push_start
     if args.switch_window is not None:
         dm.switch_window = tuple(args.switch_window)
-    dm.switch_from = args.switch_from
+    if args.switch_from is not None:
+        dm.switch_from = args.switch_from
     if args.walk_switch is not None:
         dm.walk_switch_share = args.walk_switch
     dm.noise_model, dm.noise_tau = args.noise_model, args.noise_tau
@@ -204,11 +209,12 @@ if __name__ == '__main__':
         dm.sample_every = int(round(1.0 / (args.sample_rate * p.dt)))
     if args.fall_check:
         dm.INCLINATION_THRESHOLD, dm.FALL_HEIGHT_THRESHOLD, dm.capture = 85.0, 0.1, False
+        dm.failures = ("fall",)  # the fall rule's check: run to the ground whatever else happens
     if args.filter is not None:
         from base_controllers.components.safe_rl.value_function import value_function_manager as vfm
         dm.value_function = vfm.ValueFunctionManager(
             robot_name=args.robot, model_path=None if args.filter == "default" else args.filter, threshold=args.threshold,
-            margin=args.margin, min_back=np.inf if args.no_switch_back else 200)
+            margin=args.margin, min_switch=args.min_switch, min_back=np.inf if args.no_switch_back else 200)
 
     try:
         # rl_flat.world, as the RL controller (rl_quadruped) runs the policy: no 1 mm contact
