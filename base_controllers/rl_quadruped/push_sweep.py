@@ -161,7 +161,8 @@ def run_trial(args):
 
     controller = RlQuadrupedController(args.robot, input_device="none", skip_calibration=True,
                                        use_rviz=False, realtime=False, safety_filter=args.safety_filter,
-                                       filter_threshold=args.filter_threshold)
+                                       filter_threshold=args.filter_threshold, filter_model=args.filter_model,
+                                       filter_margin=args.filter_margin)
     controller.startController(additional_args=["gui:=false"])
 
     result = {
@@ -249,6 +250,8 @@ def run_trial(args):
             result["max_survived"] = args.force
         if controller.safety_filter is not None:
             result["filter_threshold"] = controller.safety_filter.threshold
+            result["filter_margin"] = controller.safety_filter.margin
+            result["filter_model"] = os.path.basename(controller.safety_filter.model_path)
             result["filter_switches"] = controller.safety_filter.backup_trigger_counter
         result["wall_s"] = wall.monotonic() - wall_start
         try:
@@ -764,7 +767,9 @@ def parse_args(argv=None):
     trial.add_argument("--out", required=True, help="result file (json)")
     trial.add_argument("--safety-filter", action="store_true",
                        help="run the controller with its safety filter (--safety-filter)")
-    trial.add_argument("--filter-threshold", type=float, default=None, help="default per robot")
+    trial.add_argument("--filter-threshold", type=float, default=None, help="default the model's .json")
+    trial.add_argument("--filter-margin", type=float, default=None, help="default the model's .json")
+    trial.add_argument("--filter-model", default=None, help="default VF_push_end_<robot>.onnx")
 
     sweep = sub.add_parser("sweep", help="the adaptive sweep, resumable")
     sweep.add_argument("--robot", default="aliengo")

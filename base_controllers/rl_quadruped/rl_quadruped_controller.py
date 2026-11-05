@@ -23,9 +23,9 @@ from the floor to walking and back::
   (trained at zero command) on the same observation history, so the hand-over works mid-stride.
 * DAMPING (kp = 0) lets the robot sink under its own weight, from any state.
 * With --safety-filter (off by default), RL hands over to SAFE_STOP by itself when the value
-  function (components/safe_rl) says the walking policy is about to fall, and back to RL, at zero
-  command, once it has recovered.  A safe stop the operator asked for stays until the operator ends
-  it.
+  function (components/safe_rl) says the safe policy could soon no longer bring the robot to rest
+  (V below threshold plus margin), and back to RL, at zero command, once V has recovered.  A safe
+  stop the operator asked for stays until the operator ends it.
 
     python3 rl_quadruped_controller.py --robot go2                 # gazebo, keyboard
     python3 rl_quadruped_controller.py --robot go2 --safety-filter # gazebo, with the safety filter
@@ -98,9 +98,11 @@ GC_THRESHOLDS = (2000, 10)      # gen0, gen1; the full collection runs only at r
 
 # safety filter (--safety-filter, components/safe_rl/README.md): V at FILTER_RATE from
 # FILTER_START_DELAY s after the walking policy starts, as it was tested (the value function never
-# saw the gait start)
+# saw the gait start), and FILTER_RECOVERY s after the filter hands the robot back to the walking
+# policy (the paper's recovery time, Sec. III-D)
 FILTER_RATE = 100.0             # Hz
 FILTER_START_DELAY = 1.0        # s
+FILTER_RECOVERY = 1.0           # s
 
 # _checkActuation
 ACTUATION_TORQUE_MIN = 2.0      # Nm commanded before judging
@@ -138,7 +140,7 @@ class RlQuadrupedController(BaseController):
     def __init__(self, robot_name="aliengo", input_device="keyboard", real_robot=False,
                  realtime=None, telemetry=None, skip_calibration=None, use_rviz=None,
                  network_interface=None, safety_filter=False, filter_threshold=None,
-                 filter_model=None):
+                 filter_model=None, filter_margin=None):
         self.cfg = get_config(robot_name, real_robot=real_robot)
         super(RlQuadrupedController, self).__init__(robot_name, external_conf=conf,
                                                    broadcast_world=False)
@@ -159,6 +161,7 @@ class RlQuadrupedController(BaseController):
         self.use_safety_filter = safety_filter
         self.filter_threshold = filter_threshold
         self.filter_model = filter_model
+        self.filter_margin = filter_margin
         self.safety_filter = None
 
         self.state = State.INIT
@@ -941,7 +944,10 @@ class RlQuadrupedController(BaseController):
                               f"kd={self.policy.kd:.2f}, {self.policy.policy_rate:.0f} Hz"
                               + (", the safety filter ended its safe stop" if back_from_filter else ""))
             self._filter_backup = False
-            if not back_from_filter:
+            if back_from_filter:
+                if self.safety_filter is not None:
+                    self._filter_from = self.time + FILTER_RECOVERY
+            else:
                 self._resetSafetyFilter()
         self._stepPolicy(self.command.get_velocity_cmd())
         if self.state is State.RL and not self._filterSaysWalk():
@@ -975,7 +981,7 @@ class RlQuadrupedController(BaseController):
         from base_controllers.components.safe_rl.value_function.value_function_manager import (
             ValueFunctionManager)
         self.safety_filter = ValueFunctionManager(robot_name=self.robot_name, model_path=self.filter_model,
-                                                  threshold=self.filter_threshold)
+                                                  threshold=self.filter_threshold, margin=self.filter_margin)
         self._filter_decim = max(1, int(round(1.0 / (FILTER_RATE * self.dt))))
         self.safety_filter.value(np.array([0.0, 0.0, -1.0]), np.zeros(3), np.asarray(self.policy.q_default),
                                  np.zeros(self.robot.na))
@@ -1315,7 +1321,10 @@ def parse_args(argv=None):
                         help="switch to the safe policy when the value function says the walking "
                              "policy is about to fall (components/safe_rl); off by default")
     parser.add_argument("--filter-threshold", dest="filter_threshold", type=float, default=None,
-                        help="the safety filter's threshold on V; default per robot")
+                        help="the safety filter's threshold on V; default the model's .json")
+    parser.add_argument("--filter-margin", dest="filter_margin", type=float, default=None,
+                        help="the safety filter's margin L, walking while V >= threshold + L; default the "
+                             "model's .json")
     parser.add_argument("--filter-model", dest="filter_model", default=None, metavar="ONNX",
                         help="the value function; default "
                              "components/safe_rl/value_function/models/VF_push_end_<robot>.onnx")
@@ -1329,7 +1338,7 @@ if __name__ == "__main__":
                               skip_calibration=args.skip_calibration, use_rviz=args.use_rviz,
                               network_interface=args.network_interface,
                               safety_filter=args.safety_filter, filter_threshold=args.filter_threshold,
-                              filter_model=args.filter_model)
+                              filter_model=args.filter_model, filter_margin=args.filter_margin)
     recorder = None
     try:
         p.startController(world_name=args.world,
