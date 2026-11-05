@@ -62,7 +62,7 @@ python3 rl_quadruped_controller.py --robot go2 --safety-filter
 | `--safety-filter` | off | `RL` switches to `SAFE_STOP` by itself when the value function says the walking policy is about to fall (below) |
 | `--filter-threshold V` | the model's `.json` | the safety filter's threshold |
 | `--filter-margin L` | the model's `.json` | the margin: the walking policy runs while V ≥ threshold + L |
-| `--filter-model ONNX` | Aliengo `VF_mps_aliengo.onnx`, Go2 `VF_absfull_go2.onnx` | the value function, from `components/safe_rl/value_function/models/` |
+| `--filter-model ONNX` | `VF_abs_aliengo.onnx`, `VF_abs_go2.onnx` | the value function, from `components/safe_rl/value_function/models/` |
 
 `run_rl_controller.sh` starts the process with `chrt -f 80` so start-up is real-time too; `CPU=3`
 also pins it with `taskset` (useful only on a core isolated with
@@ -145,16 +145,17 @@ so the hand-over works mid-stride. Every entry zeroes the stored command. Both s
 
 **Safety filter** (`--safety-filter`, off by default; `components/safe_rl/README.md`). Model
 predictive shielding with a learned value function: in `RL`, V is evaluated 100 times a second. On
-the Aliengo it is the paper's (`VF_mps_aliengo.onnx`), the chance that the safe policy, started
-from the current state, brings the robot to rest without a fall; on the Go2, whose safe policy fails
-from some walking states, the walking policy's (`VF_absfull_go2.onnx`, ABS without its horizon), the
-chance that the walking policy recovers; both fell least in closed loop
-(`components/safe_rl/value_function_comparison.md`). Its inputs are the projected gravity and angular velocity
-from the IMU and the joint positions and velocities. When V drops below the threshold plus the
-margin L (the change of V before the next evaluation, Eq. 5 of the paper), the controller switches
+both robots the default is ABS's reach-avoid value of the walking policy (`VF_abs_<robot>.onnx`,
+He et al. 2024), which left the safe set least in closed loop
+(`components/safe_rl/value_function_comparison.md`); the paper's (`VF_mps_<robot>.onnx`, the chance
+that the safe policy, started from the current state, brings the robot to rest without leaving the
+safe set) runs with `--filter-model`. Its inputs are the projected gravity and angular velocity
+from the IMU and the joint positions and velocities. When V stays below the threshold plus the
+margin L (Eq. 5 of the paper) for the model's `min_switch` evaluations in a row, the controller switches
 to `SAFE_STOP`, mid-stride like the operator switch. Once V has stayed above that level for 2 s, it
-goes back to `RL`, at zero command like any entry, and the filter ignores V for the first 1 s of
-walking (the paper's recovery time). The filter starts 1 s after the walking policy does, as it was
+goes back to `RL`, at zero command like any entry, and the filter keeps checking (ignoring V for
+a recovery time, as in the paper's robot experiments, would leave the walking policy unshielded).
+The filter starts 1 s after the walking policy does, as it was
 tested (it never saw the gait start). A safe stop the operator asks for stays until the operator
 ends it, also when the filter started it; resuming from a filter's safe stop starts the filter
 over. Threshold and margin come with the model, in `VF_<method>_<robot>.json` next to it

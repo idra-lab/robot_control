@@ -75,7 +75,7 @@ def inclination(quaternion):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Gazebo test of the safety filter")
     parser.add_argument("--robot", default="aliengo", choices=sorted(vfm.DEFAULT_THRESHOLD))
-    parser.add_argument("--model", default=None, help="value function, ONNX (default: VF_mps_aliengo, VF_absfull_go2; value_function_manager.DEFAULT_MODEL)")
+    parser.add_argument("--model", default=None, help="value function, ONNX (default: VF_abs_<robot>; value_function_manager.DEFAULT_MODEL)")
     parser.add_argument("--threshold", type=float, default=None, help="default the model's .json (value_function_manager.py)")
     parser.add_argument("--margin", type=float, default=None, help="margin L, V < threshold + L switches; default the model's .json")
     parser.add_argument("--no-filter", action="store_true", help="show V but never switch to the safe policy")

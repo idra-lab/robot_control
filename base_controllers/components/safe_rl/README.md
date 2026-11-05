@@ -10,11 +10,15 @@ the safe policy keeps the robot).
 
 Two value functions come out of the same pipeline:
 
-| | `mps`: the paper's value function | `abs`: the ABS baseline |
+| | `mps`: the paper's value function | `abs`: the ABS baseline (He et al., RSS 2024) |
 |---|---|---|
-| Data | the walking policy, a push, a warm-up, then the **safe policy** from the switch on | the **walking policy** throughout, from the push end on |
-| V(x) | the chance that the safe policy, started at x, brings the robot to rest (static equilibrium) without a fall | the chance that the walking policy does not fall within 0.2 s (the original ABS horizon) |
-| Switch | V < threshold + L, L the margin of Eq. (5) | V < threshold |
+| Data | the walking policy, a push, a warm-up from the push end, then the **safe policy** from the switch on | the **walking policy**'s whole rollouts |
+| V(x) | the chance that the safe policy, started at x, brings the robot to rest without leaving the safe set | ABS's discounted reach-avoid value: does the walking policy track its command again before a failure (V_RA <= 0) |
+| Switch | V < threshold + L for 3 evaluations, L the margin of Eq. (5), the threshold from the walking rule | ABS's rule, V_RA >= -0.05 (the model outputs the score -V_RA, so a threshold of 0.05) |
+
+Leaving the safe set is a fall (45°, base below 0.2 m, or the base or a hip below 0.1 m), a knee on
+the ground or a joint past its limit, the same in the data, in the training and in the
+evaluation.
 
 [value_function_comparison.md](value_function_comparison.md) has the results on the Aliengo and
 the Go2, the ablations and what was decided; `paper/` (local only) holds the paper and the proposed
@@ -36,9 +40,9 @@ python3 saferl_controller.py --robot go2 --plot
 components/safe_rl/run_pipeline.sh go2
 ```
 
-The filter loads the robot's default model, `value_function/models/VF_mps_aliengo.onnx` on the
-Aliengo and `VF_absfull_go2.onnx` on the Go2 (the ones that fell least in closed loop; the Go2's safe
-policy fails from some walking states, see the comparison), with its threshold and margin from the
+The filter loads the robot's default model, `value_function/models/VF_abs_<robot>.onnx` (ABS's
+reach-avoid value, the one that left the safe set least in closed loop on both robots, see the
+comparison), with its threshold, margin and switching count from the
 `.json` next to it; nothing besides the lab image is needed to run it. `--filter-model` runs
 another one.
 
@@ -67,7 +71,7 @@ Paths from `robot_control/base_controllers`, where every command below runs: the
 | `saferl_controller.py` | Gazebo test to watch: walking, pushes, V in rviz and `rqt_plot` |
 | `rl_quadruped/rl_quadruped_controller.py --safety-filter` | the robot controller with the filter (off by default) |
 | `vf_rosbag.py` | V of a recorded bag |
-| `components/safe_rl/value_function/models/VF_<name>_<robot>.{pkl,onnx,json}` | the models: `mps`, `abs`, `absfull`, `mps_early`; the default per robot in `DEFAULT_MODEL` |
+| `components/safe_rl/value_function/models/VF_<name>_<robot>.{pkl,onnx,json}` | the models: `abs`, `mps`, `mps_early`, on the Aliengo `mps_polygon`; the default per robot in `DEFAULT_MODEL` |
 | `components/safe_rl/report_figures/` | the figures and the numbers behind them |
 
 ## Where to run
@@ -98,22 +102,24 @@ STAGES="calibrate loop summary" components/safe_rl/run_pipeline.sh aliengo     #
 The stages, in order (`run_pipeline.sh` has the details):
 
 1. **data:** the fall-rule check (episodes run to the ground); per method 6 training batches of 70
-   episodes (the 6th stops the training) and 2 test batches; the `mps_early` dataset; on the
-   Aliengo the noise ablation's datasets.
+   episodes (the 6th stops the training) and 2 test batches; `mps_early` (handovers from the push
+   start, an ablation).
 2. **calib-data:** the walking policy alone, every state at 100 Hz: 80 episodes of 20 s with one
    push of the evaluation's kicks (the threshold) and 240 with light pushes (the margin).
-3. **train:** `VF_abs` (ABS horizon 10), `VF_absfull` (no horizon), `VF_mps`, `VF_mps_early`, and
-   on the Aliengo the ablations; a model whose `.onnx` exists is kept (delete it to retrain).
-4. **calibrate:** each model's threshold and margin into its `.json`.
+3. **train:** `VF_abs` (ABS's reach-avoid value), `VF_mps`, `VF_mps_early`, and on the Aliengo
+   `VF_mps_polygon` (X_inv by the capture point); a model whose `.onnx` exists is kept (delete it to retrain).
+4. **calibrate:** each model's threshold, margin and switching count into its `.json`.
 5. **evaluate:** each model on its method's test batches.
-6. **loop:** the same 240 pushes per arm (the walking policy alone, the safe policy alone, each
-   model at the walking rule and at the paper's percentile rule, the margin ablation, fixed
-   thresholds, switching back), every episode 7 s long.
+6. **loop:** the same 240 pushes per arm (the walking policy alone, the safe policy alone, ABS at its
+   rule and at the walking rule, ours at the walking rule, at the paper's percentile rule, without
+   the margin, on a single value, switching back; the ablations), every episode 7 s long unless the
+   robot leaves the safe set.
 7. **summary:** `summarize.sh`, the tables and figures in `report_figures/`.
 
 A stage skips the batches already complete, so an interrupted run resumes; delete a folder to redo
-it. About 3.5 h for the Aliengo (with its ablations) and 2.5 h for the Go2 on 24 cores, 8
-simulations at a time in real time. Seeds are fixed per robot (`SEED`, Aliengo 1000, Go2 2000, plus
+it. About 3 h for the Aliengo (with its ablations) and 2.5 h for the Go2 on 24 cores, 8 simulations
+at a time in real time; `CONCURRENT=1` runs a second robot alongside (16 simulations, the two
+sharing each arm's wait). Seeds are fixed per robot (`SEED`, Aliengo 1000, Go2 2000, plus
 an offset per run), so a rerun sees the same commands and pushes; Gazebo is not deterministic, so
 its numbers move a little. Environment variables change the sizes (`FALL_EPISODES`, `EPISODES`,
 `THR_EPISODES`, `MARGIN_EPISODES`, `LOOP_EPISODES`, `LOOP_LENGTH`, `EPOCHS`) and the outputs
@@ -170,19 +176,27 @@ An episode:
   `--noise` × the joint's torque limit (0.04) and time constant `--noise-tau` (0.05 s), throughout;
   `white`, `--noise` Nm per tick from the push on (the datasets of 2026-10-29: with it the robot never
   comes to rest); `none`.
-- **`--method abs`:** the walking policy throughout; samples from the push end (`--from-push-start`:
-  from its start, for test data); the episode ends at a fall, at capture (capture point within 5 cm
-  for 0.5 s) or 3 s after the push (survived), and capture and survival are the success.
-- **`--method mps`:** the walking policy for a warm-up uniform in `--switch-window` (0–0.5 s) after
-  the push end (`--switch-from push_start`: after its start), then the safe policy at zero command;
-  in 20 % of the episodes (`--walk-switch`) there is no push and the switch comes during undisturbed
-  walking. Samples from the switch; the episode ends at a fall, with the robot in both invariant
-  sets, or 6 s after the switch (a timeout, left out of the training). Success is static
-  equilibrium: trunk and joint angular velocities below 0.1 rad/s and trunk linear velocity below
-  0.1 m/s, averaged over 0.2 s (the instantaneous velocities never get there: the safe policy keeps
-  correcting and the noise shakes the joints). The other invariant set, the capture point in the
-  support polygon scaled by 0.8 with all feet on the ground, is saved for the ablation.
-- **Fall.** Inclination over 45° or base below 0.2 m.
+- **Safe set.** An episode ends, labelled fallen, when the robot leaves it: the fall rule
+  (inclination over 45° or base below 0.2 m), the base or a hip joint below 0.1 m, a knee joint below
+  3.5 cm, or a joint position past its URDF limit by more than 0.01 rad or a velocity past its limit
+  (`failures` in `dataset_manager.py`; `--fall-check` keeps the fall rule alone).
+- **`--method abs`:** the walking policy throughout, recorded whole from 1 s, and the episode ends
+  leaving the safe set or 3 s after the push. Per sample ABS's reach-avoid margins: zeta, +1 out of
+  the safe set and −1 in it, and l = tanh(log(e / 0.2 m/s)), e the walking policy's tracking error
+  (base velocity averaged over 0.5 s against the command, plus 0.2 × the yaw-rate error), so l ≤ 0
+  when it tracks its command again.
+- **`--method mps`:** the walking policy for a warm-up uniform in `--switch-window` (0–0.5 s) after the
+  push end (`--switch-from push_start` counts from its start, the `mps_early` ablation: the push's
+  onset is not in the state, so those handovers drag down V of walking states too); in 30 % of the
+  episodes (`--walk-switch`) there is no
+  push and the switch comes during undisturbed walking. Samples from the switch; the episode ends
+  leaving the safe set, with the robot in both invariant sets, or 8 s after the switch (a timeout,
+  left out of the training). Success is static equilibrium: the robot on its feet (all four in
+  contact), upright (under 10°) and at height (over 0.75 × its standing height), with trunk and joint
+  angular velocities below 0.1 rad/s and trunk linear velocity below 0.1 m/s averaged over 0.5 s (at
+  any instant the safe policy keeps correcting and the noise shakes the joints), all held 0.3 s. The
+  other invariant set, the capture point in the support polygon scaled by 0.8 with the same posture,
+  is saved for the ablation.
 
 Each episode is seeded by (seed, its index), so runs with the same `--seed` see the same commands,
 pushes and switches. Gazebo runs in real time (`--speed`), about 6 s per episode; an episode where
@@ -224,13 +238,15 @@ python3 components/safe_rl/value_function/train_value_function.py --method mps \
     --model $M/VF_mps_$ROBOT.pkl --epochs 600
 ```
 
-TD(0) with the paper's target, (1 − fall) × ((1 − success) × V(next state) + success), on every
-transition, shuffled, with a target network (τ = 0.01). `--method abs --horizon 10` relabels the
-falling episodes as the original ABS training did (only the last 10 transitions lead to the fall);
-`--horizon 0` keeps the whole episode. `--method mps --x-inv polygon` uses the support-polygon set;
-an episode ending in neither a fall nor the set is left out. `--obs-noise S` adds sensor noise to
-the states V sees. Every 25 epochs V of the `--val` states is scored against the outcome its
-target stands for (Brier score), and the best epoch is saved. The model is saved as `.pkl` (flax)
+TD(0) on every transition, shuffled, with a target network (τ = 0.01). `--method mps`: the paper's
+target, (1 − fail) × ((1 − success) × V(next state) + success); `--x-inv polygon` uses the
+support-polygon set; an episode ending in neither a failure nor the set is left out. `--method abs`:
+ABS's discounted reach-avoid target, γ (max(ζ, min(l, V(next))) + (1 − γ) max(l, ζ)), γ = 0.999999,
+ζ softened to −0.8 … 1.0 over the last 10 states before a failure, and the last state terminal
+(V = max(ζ, l)); the model is saved as the score −V_RA, higher safer like ours. `--obs-noise S` adds
+sensor noise to the states V sees. Every 25 epochs the `--val` states are scored against what the
+target stands for (mps: the outcome, Brier score; abs: the Monte Carlo reach-avoid value), and the
+best epoch is saved. The model is saved as `.pkl` (flax)
 and `.onnx` (`export_onnx.py`, normalisation inside the graph, checked against JAX to 1e-4).
 
 ## 5. Calibrate: threshold and margin
@@ -246,13 +262,20 @@ python3 components/safe_rl/value_function/calibrate_filter.py --model $M/VF_mps_
     --threshold-data $(npy $O/calibration/threshold) --margin-data $(npy $O/calibration/margin)
 ```
 
-- **Margin**, Eq. (5) of the paper: L = max |ΔV| / ‖Δo‖ × max ‖Δo‖ over consecutive states 0.01 s
-  apart, after leaving out the 5 % largest steps and then the 5 % largest ratios; the states are
+- **Margin**, Eq. (5) of the paper: L = max |ΔV| / ‖Δo‖ × max ‖Δo‖ over states as far apart as the
+  time from the first value below the level to the safe policy acting (the `--consecutive` − 1
+  further evaluations, 0.01 s each, and `--action-delay`, one policy step plus the actuators' delay,
+  0.03 s), after leaving out the 5 % largest steps and then the 5 % largest ratios; the states are
   compared in the model's input normalisation. The ABS baseline uses no margin.
-- **Threshold**, `--rule`: `walking` (default), the highest threshold at which the filter never
-  switches on the undisturbed walking states of the calibration runs (threshold + L = their lowest
-  V); `percentile`, the paper's rule (the 1st percentile of V over all the states), fragile and
-  kept for reference; `risk`, 1 − `--risk`. All three go in the `.json`.
+- **Threshold**, `--rule`: `walking` (ours' default), the highest threshold at which the filter never
+  switches on the undisturbed walking states of the calibration runs: it switches only after
+  `--consecutive` (3) values in a row below its level, so the level is the lowest, over the walking
+  states, of the largest of 3 consecutive values, and a single-sample dip of V does not set it;
+  `abs` (ABS's default), ABS's own rule, V_RA ≥ −0.05, on a single value; `percentile`, the paper's
+  rule (the 1st percentile of V over all the states), which controls a rate per state rather than
+  per unit of time and moves with the share of failing states, kept for reference; `risk`,
+  1 − `--risk`. All of them, and the walking rule on a single value (`walking_k1`, with its margin),
+  go in the `.json`, with `min_switch`.
 
 ## 6. Evaluate
 
@@ -316,7 +339,7 @@ on; at the end a table lists each push.
 ```python
 from base_controllers.components.safe_rl.value_function.value_function_manager import ValueFunctionManager
 
-vf = ValueFunctionManager(robot_name="go2")     # VF_absfull_go2.onnx, threshold and margin from its .json
+vf = ValueFunctionManager(robot_name="go2")     # VF_abs_go2.onnx, threshold, margin, min_switch from its .json
 ...
 # at 100 Hz, inputs in the base frame, joints in the order of quadruped.q
 walking, V = vf.computeValueFnc(proj_gravity_b, ang_vel_b, q, qd)
@@ -329,14 +352,14 @@ else:
 ```
 
 It switches to the safe policy after `min_switch` evaluations in a row below threshold + margin
-(1), and back after `min_back` in a row above it (200: 2 s at 100 Hz; `np.inf`: never). `vf.reset()`
-returns to the walking policy. The manager runs the `.onnx` on onnxruntime with one thread and
+(the model's `.json`: 3, ABS 1), and back after `min_back` in a row above it (200: 2 s at 100 Hz;
+`np.inf`: never). `vf.reset()` returns to the walking policy. The manager runs the `.onnx` on onnxruntime with one thread and
 needs no JAX: 0.015 ms per evaluation on average.
 
 `rl_quadruped/rl_quadruped_controller.py` has the filter behind `--safety-filter` (off by default;
 `--filter-threshold`, `--filter-margin`, `--filter-model`): `RL` hands over to `SAFE_STOP` and back,
-V is ignored for 1 s after the filter hands back (the paper's recovery time), and a safe stop the
-operator asks for stays the operator's. Its README (Safety filter) has the details.
+the filter keeps checking after it hands back, and a safe stop the operator asks for stays the
+operator's. Its README (Safety filter) has the details.
 
 ## Reproducing the report
 

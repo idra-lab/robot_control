@@ -1325,8 +1325,8 @@ def parse_args(argv=None):
                              "model's .json")
     parser.add_argument("--filter-model", dest="filter_model", default=None, metavar="ONNX",
                         help="the value function; default "
-                             "components/safe_rl/value_function/models/VF_<DEFAULT_MODEL>_<robot>.onnx: mps on the "
-                             "Aliengo, absfull on the Go2")
+                             "components/safe_rl/value_function/models/VF_<DEFAULT_MODEL>_<robot>.onnx: abs (ABS's "
+                             "reach-avoid value) on both robots")
     return parser.parse_args(argv)
 
 
