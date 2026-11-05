@@ -65,13 +65,13 @@ for name in $models; do
   echo "-------- evaluation on the test batches (evaluate_value_function.py)"
   grep -v "GPU/TPU\|^Plot" $D/evaluate_$name.log || true
 done
-# the filters at their threshold (walking rule) and margin; the threshold rules; the margin; the
-# falls against needless switches curve; switching back; the ablations at both threshold rules
-table main abs alone safe abs absfull mps mps_early
-table rule mps alone abs abs_pct absfull absfull_pct mps mps_pct mps_early mps_early_pct
-table margin mps alone mps mps_L0 mps_pct mps_pct_L0
-table threshold - alone safe abs_t0.5 abs_pct abs abs_t0.99 mps_t0.5 mps_pct mps_t0.9 mps mps_t0.95 mps_early mps_early_t0.9
-table switch_back - alone abs abs_back abs_pct abs_pct_back mps mps_back mps_pct mps_pct_back
-table ablation mps alone mps mps_early mps_polygon mps_obsnoise mps_nonoise mps_ou2
-table ablation_pct mps_pct alone mps_pct mps_early_pct mps_polygon_pct mps_obsnoise_pct mps_nonoise_pct mps_ou2_pct
+# ABS (its rule) against ours (the walking rule); the threshold rules; the margin; switching on one
+# value; the trade-off of all arms; switching back; the ablations of ours
+table main abs alone safe abs abs_walk mps
+table rule mps alone abs abs_walk mps mps_pct
+table margin mps alone mps mps_L0
+table consecutive mps alone mps mps_k1
+table threshold - alone safe abs abs_walk mps_pct mps_k1 mps_L0 mps mps_early mps_polygon
+table switch_back - alone abs abs_back mps mps_back
+table ablation mps alone mps mps_early mps_polygon
 } 2>&1 | grep -v "GPU/TPU" | tee $FIGURES/${robot}_summary.txt

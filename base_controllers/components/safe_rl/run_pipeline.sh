@@ -1,40 +1,38 @@
 #!/bin/bash
 # @author: riccardobussola
 # The value function study for one or more robots, from the host (README.md, "Run it all"): the ABS
-# baseline (abs, the walking policy's value) and the paper's value function (mps, the safe policy's)
-# from the same pipeline, then the safety filter in closed loop with each.  Stages, in order:
+# baseline (abs, ABS's reach-avoid value of the walking policy) and the paper's value function (mps, the
+# safe policy's chance of reaching the invariant set) from the same pipeline, then the safety filter in
+# closed loop with each.  Stages, in order:
 #   data        fall-rule check (8 x FALL_EPISODES run to the ground); per method 6 batches of EPISODES
-#               for training (the 6th stops it) and 2 for the test (abs recorded from the push start);
-#               mps_early, the safe policy taking over from the push start on (--switch-from
-#               push_start --switch-window 0 0.7); aliengo also the mps datasets of the noise ablation
-#               (no noise, 2 % of the torque limits)
+#               for training (the 6th stops it) and 2 for the test; mps_early, the ablation of the
+#               handover time (the safe policy taking over from the push start, --switch-from push_start
+#               --switch-window 0 0.7)
 #   calib-data  the walking policy alone, every state at 100 Hz: 8 x THR_EPISODES runs of 20 s with the
 #               evaluation's kicks (the threshold), 8 x MARGIN_EPISODES with light kicks (the margin)
 #   train       MODELS/VF_<name>_<robot>.pkl and .onnx, unless the .onnx exists (delete it to retrain):
-#               abs (horizon 10, the original ABS training), absfull (horizon 0), mps (static
-#               equilibrium), mps_early (its dataset); aliengo also the ablations mps_polygon (X_inv:
-#               capture point in the support polygon), mps_obsnoise (--obs-noise 1), mps_nonoise, mps_ou2
-#               (trained on the noise ablation's datasets)
-#   calibrate   threshold (the walking rule; the paper's percentile rule kept in the .json) and margin of
-#               each model (calibrate_filter.py), into VF_<name>_<robot>.json
+#               abs (ABS's reach-avoid training), mps (static equilibrium), mps_early (its dataset);
+#               aliengo also mps_polygon (X_inv: capture point in the support polygon)
+#   calibrate   threshold, margin and switching count of each model (calibrate_filter.py; abs: ABS's own
+#               rule, mps: the walking rule over 3 evaluations), into VF_<name>_<robot>.json
 #   evaluate    each model on its method's test batches (evaluate_value_function.py)
 #   loop        closed loop, the same 8 x LOOP_EPISODES pushes (the evaluation's kicks) per arm, every
-#               episode LOOP_LENGTH s long unless the robot falls (as the paper's fixed-length
-#               simulations): the walking policy alone, the safe policy alone (from the push start),
-#               the filter with each model (no switching back, as the paper's simulations) at its
-#               threshold and margin (<model>) and at the paper's percentile threshold (<model>_pct),
-#               mps with the margin 0 (mps_L0, mps_pct_L0), fixed thresholds (the falls against needless
-#               switches curve), and switching back after 2 s (<model>_back, <model>_pct_back)
+#               episode LOOP_LENGTH s long unless the robot leaves the safe set, the safe policy kept once
+#               switched (the paper's simulations): the walking policy alone, the safe policy alone (from
+#               the push start), abs at ABS's rule and at the walking rule (abs_walk), mps at its .json
+#               and at the paper's percentile threshold (mps_pct), without the margin (mps_L0), switching
+#               on a single value (mps_k1), switching back after 2 s (abs_back, mps_back), mps_early;
+#               aliengo also mps_polygon
 #   summary     summarize.sh: figures and numbers in FIGURES/
 #
 #   run_pipeline.sh [robot ...]        default: aliengo go2;  STAGES="train calibrate" for some stages
 #
 # A stage skips the batches already complete, so an interrupted run resumes; delete a folder to redo
-# it.  About 2.5 h for Aliengo (with the ablations) and 1.5 h for Go2 on 24 cores, 8 simulations at a
-# time in real time.  Seeds per robot: SEED (aliengo 1000, go2 2000) + 0 fall check, 100 abs, 200 mps,
-# 300 threshold runs, 400 margin runs, 500 closed loop, 600 and 700 the noise ablation.  Outputs,
-# relative to robot_control/base_controllers: OUT (components/safe_rl/value_function/observation_datasets)
-# /<robot>/, MODELS (.../value_function/models), FIGURES (components/safe_rl/report_figures).
+# it.  About 3 h for the Aliengo (with the ablations) and 2.5 h for the Go2 on 24 cores, 8 simulations
+# at a time in real time.  Seeds per robot: SEED (aliengo 1000, go2 2000) + 0 fall check, 100 abs, 900
+# mps, 200 mps_early, 300 threshold runs, 400 margin runs, 500 closed loop.  Outputs, relative to
+# robot_control/base_controllers: OUT (components/safe_rl/value_function/observation_datasets)/<robot>/,
+# MODELS (.../value_function/models), FIGURES (components/safe_rl/report_figures).
 set -e
 SR_HOST=$(dirname "$(readlink -f "$0")")
 BC_HOST=$(readlink -f "$SR_HOST/../..")
@@ -66,8 +64,10 @@ npy() { (cd "$BC_HOST" && ls $1/batch*/observations_dataset_abs_test.npy); }
 in_image() { "$SR_HOST/run_in_image.sh" "$@"; }
 json() { python3 -c "import json,sys; d=json.load(open('$BC_HOST/$1')); print(eval('d' + sys.argv[1]))" "$2"; }
 
-if [ -n "$(docker ps -q --filter name=safe_rl_)" ]; then
-  echo "safe_rl_ containers are running (docker ps): wait for them or stop them first"; exit 1
+# CONCURRENT=1: another run_pipeline.sh (another robot) is running alongside; the two then wait on
+# each other's batches, so two arms run at a time
+if [ -z "$CONCURRENT" ] && [ -n "$(docker ps -q --filter name=safe_rl_)" ]; then
+  echo "safe_rl_ containers are running (docker ps): wait for them, stop them, or set CONCURRENT=1"; exit 1
 fi
 for robot in $ROBOTS; do
   case $robot in
@@ -78,21 +78,17 @@ for robot in $ROBOTS; do
   light_kicks=$(python3 -c "import numpy as np; print(' '.join(f'{k:.3f}' for k in np.linspace(0.05, $light, 12)))")
   D=$OUT/$robot
   R="--robot $robot"
-  models="abs absfull mps mps_early"
-  [ $ablations = 1 ] && models="$models mps_polygon mps_obsnoise mps_nonoise mps_ou2"
+  models="abs mps mps_early"
+  [ $ablations = 1 ] && models="$models mps_polygon"
 
   if stage data; then
     stamp "$robot: data"
     batches $seed 8 $FALL_EPISODES $D/fall_check $R --fall-check
     batches $((seed + 100)) 6 $EPISODES $D/abs/episodes $R --method abs
-    batches $((seed + 106)) 2 $EPISODES $D/abs/test $R --method abs --from-push-start
-    batches $((seed + 200)) 6 $EPISODES $D/mps/episodes $R --method mps
-    batches $((seed + 206)) 2 $EPISODES $D/mps/test $R --method mps
-    batches $((seed + 800)) 6 $EPISODES $D/mps_early/episodes $R --method mps --switch-from push_start --switch-window 0 0.7
-    if [ $ablations = 1 ]; then
-      batches $((seed + 600)) 6 $EPISODES $D/mps_nonoise/episodes $R --method mps --noise-model none
-      batches $((seed + 700)) 6 $EPISODES $D/mps_ou2/episodes $R --method mps --noise 0.02
-    fi
+    batches $((seed + 106)) 2 $EPISODES $D/abs/test $R --method abs
+    batches $((seed + 900)) 6 $EPISODES $D/mps/episodes $R --method mps
+    batches $((seed + 906)) 2 $EPISODES $D/mps/test $R --method mps
+    batches $((seed + 200)) 6 $EPISODES $D/mps_early/episodes $R --method mps --switch-from push_start --switch-window 0 0.7
   fi
 
   if stage calib-data; then
@@ -106,14 +102,10 @@ for robot in $ROBOTS; do
     stamp "$robot: training $models"
     for name in $models; do
       case $name in
-        abs) data=$D/abs; opts="--method abs --horizon 10";;
-        absfull) data=$D/abs; opts="--method abs --horizon 0";;
+        abs) data=$D/abs; opts="--method abs";;
         mps) data=$D/mps; opts="--method mps";;
         mps_early) data=$D/mps_early; opts="--method mps";;
         mps_polygon) data=$D/mps; opts="--method mps --x-inv polygon";;
-        mps_obsnoise) data=$D/mps; opts="--method mps --obs-noise 1";;
-        mps_nonoise) data=$D/mps_nonoise; opts="--method mps";;
-        mps_ou2) data=$D/mps_ou2; opts="--method mps";;
       esac
       [ -f "$BC_HOST/$MODELS/VF_${name}_$robot.onnx" ] && continue
       # three trainings at a time, 4 cores each
@@ -140,9 +132,10 @@ for robot in $ROBOTS; do
     stamp "$robot: evaluation"
     mkdir -p "$BC_HOST/$FIGURES"
     for name in $models; do
-      method=${name%%_*}; method=${method/absfull/abs}  # mps_* on the mps test batches
+      method=${name%%_*}  # mps_* on the mps test batches
+      levels=$([ $method = abs ] && echo "0.05 0.2 0.5" || echo "0.5 0.8 0.9")
       in_image python3 $VF/evaluate_value_function.py --model $MODELS/VF_${name}_$robot.onnx \
-        --data $(npy $D/$method/test) --light-kick $light --plot $FIGURES/${robot}_vf_$name.png \
+        --data $(npy $D/$method/test) --light-kick $light --thresholds $levels --plot $FIGURES/${robot}_vf_$name.png \
         > "$BC_HOST/$D/evaluate_$name.log" 2>&1
     done
   fi
@@ -158,19 +151,13 @@ for robot in $ROBOTS; do
     pct() { setting $1 "['rule_thresholds']['percentile']"; }
     loop alone
     loop safe --backup-delay 0
-    for name in $models; do
-      loop $name $(filter $name)
-      loop ${name}_pct $(filter $name) --threshold $(pct $name)
-    done
+    for name in $models; do loop $name $(filter $name); done
+    loop abs_walk $(filter abs) --threshold $(setting abs "['rule_thresholds']['walking']") --min-switch 3
+    loop mps_pct $(filter mps) --threshold $(pct mps)
     loop mps_L0 $(filter mps) --threshold $(setting mps "['threshold']") --margin 0
-    loop mps_pct_L0 $(filter mps) --threshold $(pct mps) --margin 0
-    for t in 0.5 0.99; do loop abs_t$t $(filter abs) --threshold $t; done
-    for t in 0.5 0.9 0.95; do loop mps_t$t $(filter mps) --threshold $t --margin 0; done
-    loop mps_early_t0.9 $(filter mps_early) --threshold 0.9 --margin 0
-    for name in abs mps; do
-      loop ${name}_back --filter $MODELS/VF_${name}_$robot.onnx
-      loop ${name}_pct_back --filter $MODELS/VF_${name}_$robot.onnx --threshold $(pct $name)
-    done
+    loop mps_k1 $(filter mps) --threshold $(setting mps "['rule_thresholds']['walking_k1']") \
+      --margin $(setting mps "['margin_k1']") --min-switch 1
+    for name in abs mps; do loop ${name}_back --filter $MODELS/VF_${name}_$robot.onnx; done
   fi
 
   if stage summary; then

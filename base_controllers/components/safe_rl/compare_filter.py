@@ -12,19 +12,23 @@ the same order: episode by episode the arms then share the command and the push.
 <name>_episodes.csv next to each dataset is read.  Episodes discarded in any arm are left out of all.
 
 Per arm, in % of the episodes (the paper's Table I and more):
-* fell: our fall rule (dataset_manager.py, 45 deg or base below 0.2 m); paper fall: base or a hip
-  joint below 0.1 m; knees: a knee joint below 3.5 cm; joint limits: a joint position or velocity past
-  its URDF limit; total: a paper fall, knee or joint limit violation.
+* failed: the episode left the safe set (dataset_manager.py, failures: the fall rule, the paper's fall,
+  a knee on the ground or a joint past its limit) -- what the value functions are trained to avoid;
+  fall rule: inclination over 45 deg or base below 0.2 m; paper fall: base or a hip joint below 0.1 m;
+  knees: a knee joint below 3.5 cm; joint limits: a joint position past its URDF limit by more than
+  0.01 rad or a velocity past its limit.  Each episode ends at its first failure, so these count the
+  failures that came first (several can come at the same tick); speed only: the failure was a joint
+  velocity past its limit alone (Gazebo does not saturate the motors' speed, real motors do).
 * switched: the safe policy ran (the filter chose it, before or after the push, or the arm is the
   safe policy alone); walking: the filter switched before the push, while walking undisturbed (a
   false trigger: with no switching back, the robot then meets the push on the safe policy); needless: of the episodes the reference
   arm (the walking policy alone) recovered from, those it switched in; stopped: of the episodes it
   switched in, those where the robot reached static equilibrium (the paper's X_inv).
-* prevented and caused: falls (our rule) the reference had and the arm did not, and the reverse.
+* prevented and caused: failures the reference had and the arm did not, and the reverse.
 The fall rate per kick (or kick band) goes in --plot.  --tradeoff plots each arm's falls against its
 needless switches, with 95 % Wilson intervals, the trade-off a filter's threshold sets.  --versus ARM
-compares each arm with ARM episode by episode (falls, our rule): the episodes only one of the two
-fell in, and the exact McNemar test on them (two-sided binomial p).
+compares each arm with ARM episode by episode (failures): the episodes only one of the two failed in,
+and the exact McNemar test on them (two-sided binomial p).
 """
 
 import argparse
@@ -110,9 +114,11 @@ def main():
         limits = (ep["jl_pos"] > 0) | (ep["jl_vel"] > 0)
         switched = switched_in(ep)
         stopped = np.isfinite(ep["static_time"])
+        rule = ep["fall_rule"] > 0 if "fall_rule" in ep.dtype.names else fell
+        speed_only = (ep["jl_vel"] > 0) & ~(rule | paper | knees | (ep["jl_pos"] > 0))
         rows.append({
-            "arm": name, "fell": fell.mean(), "paper fall": paper.mean(), "knees": knees.mean(),
-            "joint limits": limits.mean(), "total": (paper | knees | limits).mean(), "switched": switched.mean(),
+            "arm": name, "failed": fell.mean(), "fall rule": rule.mean(), "paper fall": paper.mean(),
+            "knees": knees.mean(), "joint limits": limits.mean(), "speed only": speed_only.mean(), "switched": switched.mean(),
             "walking": np.mean(ep["switch_time"] < 0),
             "needless": np.sum(switched & ~fell_ref) / max(1, np.sum(~fell_ref)),
             "stopped": np.sum(switched & stopped) / max(1, switched.sum()) if switched.any() else np.nan,
@@ -120,7 +126,7 @@ def main():
             "switch s": float(np.median(ep["switch_time"][filtered])) if (filtered := np.isfinite(ep["switch_time"])).any()
             else np.nan})
 
-    percent = ("fell", "paper fall", "knees", "joint limits", "total", "switched", "walking", "needless", "stopped")
+    percent = ("failed", "fall rule", "paper fall", "knees", "joint limits", "speed only", "switched", "walking", "needless", "stopped")
     header = ["arm"] + list(percent) + ["prevented", "caused", "switch s"]
     cell = lambda r, c: (r[c] if c == "arm" else "-" if isinstance(r[c], float) and np.isnan(r[c])
                          else f"{100 * r[c]:.1f}" if c in percent else f"{r[c]:.2f}" if c == "switch s" else str(r[c]))
@@ -136,9 +142,9 @@ def main():
 
     if args.versus:
         base = arms[args.versus]["fallen"] > 0
-        print(f"\nEpisode by episode against {args.versus} (falls): fell only with the arm / only with "
+        print(f"\nEpisode by episode against {args.versus} (failures): failed only with the arm / only with "
               f"{args.versus}, exact McNemar p")
-        lines = [f"| arm | fell only with the arm | fell only with {args.versus} | p |", "|---|---|---|---|"]
+        lines = [f"| arm | failed only with the arm | failed only with {args.versus} | p |", "|---|---|---|---|"]
         for name in names:
             if name == args.versus:
                 continue
@@ -148,7 +154,7 @@ def main():
             lines.append(f"| {name} | {b} | {c} | {mcnemar(b, c):.3g} |")
         if args.table:
             with open(args.table, "a") as f:
-                f.write(f"\nEpisode by episode against {args.versus} (falls):\n\n" + "\n".join(lines) + "\n")
+                f.write(f"\nEpisode by episode against {args.versus} (failures):\n\n" + "\n".join(lines) + "\n")
 
     if args.tradeoff:
         import matplotlib
@@ -169,7 +175,7 @@ def main():
                         ecolor=color, elinewidth=0.8, capsize=2, alpha=0.9)
             ax.annotate(name, (x, y), xytext=(4, 4), textcoords="offset points", fontsize=7, color="#374151")
         ax.set(xlabel=f"needless switches (of the {recovered.sum()} episodes {reference} recovered from)",
-               ylabel="episodes that fell", xlim=(-0.03, 1.03), ylim=(0, None))
+               ylabel="episodes that failed (left the safe set)", xlim=(-0.03, 1.03), ylim=(0, None))
         ax.grid(color="#e5e7eb", lw=0.6)
         for side in ("top", "right"):
             ax.spines[side].set_visible(False)
@@ -178,7 +184,7 @@ def main():
         print(f"Trade-off plot: {args.tradeoff}")
 
     groups = kick_groups(kick)
-    print("\nfall rate per kick, m/s (episodes): " + ", ".join(f"{label} ({m.sum()})" for label, m in groups))
+    print("\nfailure rate per kick, m/s (episodes): " + ", ".join(f"{label} ({m.sum()})" for label, m in groups))
     for name in names:
         fell = arms[name]["fallen"] > 0
         print(f"  {name:24s} " + "  ".join(f"{fell[m].mean():4.0%}" for _, m in groups))
@@ -199,7 +205,7 @@ def main():
                    label=f"{name} ({fell.mean():.0%})")
         ax.set_xticks(x)
         ax.set_xticklabels([f"{label}\n({m.sum()})" for label, m in groups])
-        ax.set(xlabel="kick, m/s (episodes)", ylabel="episodes that fell", ylim=(0, 1.05))
+        ax.set(xlabel="kick, m/s (episodes)", ylabel="episodes that failed", ylim=(0, 1.05))
         ax.legend(fontsize=7, frameon=False, ncol=2, loc="upper left")
         ax.grid(axis="y", color="#e5e7eb", lw=0.6)
         for side in ("top", "right"):

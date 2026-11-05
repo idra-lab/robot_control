@@ -1,9 +1,10 @@
 """
 @author: riccardobussola
 
-The falls against needless switches trade-off of the closed loop, one panel per robot: each value
-function at its thresholds, joined in order of threshold, the walking rule's starred, the paper's
-percentile rule's circled; the walking policy alone and the safe policy alone as references.
+The failures against needless switches trade-off of the closed loop, one panel per robot: each arm of
+the two value functions (ABS's reach-avoid value, ours), the walking rule's starred, ABS's own rule a
+diamond, the paper's percentile rule circled; the walking policy alone and the safe policy alone as
+references.  A failure is leaving the safe set (a fall, a knee on the ground, a joint past its limit).
 
     python3 components/safe_rl/plot_tradeoff.py [--robots aliengo go2] [--out report_figures/tradeoff.png]
 
@@ -20,17 +21,22 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "value_function", "observation_datasets")
-# per value function: its arms in order of threshold, with the threshold rule they use
+# per value function, its arms
 FAMILIES = {
-    "ABS (horizon 0.2 s)": ("#c2410c", ["abs_t0.5", "abs_pct", "abs", "abs_t0.99"]),
-    "ABS, no horizon": ("#f59e0b", ["absfull_pct", "absfull"]),
-    "ours (MPS)": ("#1d4ed8", ["mps_t0.5", "mps_pct", "mps_t0.9", "mps", "mps_t0.95"]),
-    "ours, early handovers": ("#0891b2", ["mps_early_pct", "mps_early", "mps_early_t0.9"]),
+    "ABS (reach-avoid value)": ("#c2410c", ["abs", "abs_walk"]),
+    "ours (MPS)": ("#1d4ed8", ["mps_pct", "mps_k1", "mps_L0", "mps"]),
+    "ours, ablations": ("#0891b2", ["mps_early", "mps_polygon"]),
 }
+LABELS = {"abs": "ABS rule", "abs_walk": "walking rule", "mps_pct": "percentile", "mps_k1": "1 value",
+          "mps_L0": "no margin", "mps": "ours", "mps_early": "early handovers", "mps_polygon": "polygon X_inv"}
 
 
-# the arms at the walking rule's threshold (the model's .json)
-WALKING_RULE = ("abs", "absfull", "mps", "mps_early")
+# label offsets (points, alignment) where the default, up and right, collides with a neighbour
+OFFSETS = {("aliengo", "mps_polygon"): (-6, 6, "right"), ("aliengo", "mps_L0"): (-6, -10, "right"),
+           ("go2", "mps_pct"): (-6, 4, "right"), ("go2", "mps_L0"): (0, 9, "center"), ("go2", "mps"): (9, -1, "left")}
+
+# the arms at the walking rule's threshold
+WALKING_RULE = ("abs_walk", "mps", "mps_early", "mps_polygon")
 
 
 def load(robot, arm):
@@ -73,18 +79,18 @@ def main():
                         color="#374151", ha="right")
         for label, (color, names) in FAMILIES.items():
             pts = [(name, *point(arms[name])) for name in names if arms.get(name) is not None]
-            if not pts:
-                continue
-            pts.sort(key=lambda p: p[1])
-            ax.plot([p[1] for p in pts], [p[2] for p in pts], color=color, lw=1.4, label=label, zorder=2)
-            for name, x, y in pts:
+            for i, (name, x, y) in enumerate(pts):
                 walking = name in WALKING_RULE
                 pct = name.endswith("_pct")
-                ax.scatter(x, y, color=color, s=110 if walking else 28, marker="*" if walking else "o",
+                marker = "*" if walking else "D" if name == "abs" else "o"
+                ax.scatter(x, y, color=color, s=110 if walking else 36, marker=marker, label=label if i == 0 else None,
                            edgecolors="black" if pct else color, linewidths=1.2 if pct else 0, zorder=3)
+                dx, dy, ha = OFFSETS.get((robot, name), (5, 3, "left"))
+                ax.annotate(LABELS.get(name, name), (x, y), xytext=(dx, dy), textcoords="offset points", fontsize=7,
+                            color="#374151", ha=ha)
         ax.set_title(robot.capitalize(), fontsize=11)
         ax.set(xlabel=f"needless switches (of the {recovered.sum()} pushes the walking policy survives alone)",
-               ylabel="pushes that ended in a fall", xlim=(-0.03, 1.05), ylim=(0, None))
+               ylabel="pushes that ended in a failure", xlim=(-0.03, 1.05), ylim=(0, None))
         ax.grid(color="#e5e7eb", lw=0.6)
         for side in ("top", "right"):
             ax.spines[side].set_visible(False)
@@ -93,6 +99,8 @@ def main():
     handles += [Line2D([], [], marker="*", ls="", color="#374151", ms=10),
                 Line2D([], [], marker="o", ls="", color="white", markeredgecolor="black", ms=6)]
     labels += ["walking rule", "percentile rule (paper)"]
+    handles.insert(len(handles) - 2, Line2D([], [], marker="D", ls="", color="#374151", ms=6))
+    labels.insert(len(labels) - 2, "ABS's rule")
     axes[0][-1].legend(handles, labels, fontsize=8, frameon=False, loc="upper right")
     fig.tight_layout()
     fig.savefig(args.out, dpi=150)
