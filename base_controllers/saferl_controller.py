@@ -76,7 +76,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Gazebo test of the safety filter")
     parser.add_argument("--robot", default="aliengo", choices=sorted(vfm.DEFAULT_THRESHOLD))
     parser.add_argument("--model", default=None, help="value function, ONNX (default models/VF_push_end_<robot>.onnx)")
-    parser.add_argument("--threshold", type=float, default=None, help="default per robot (value_function_manager.py)")
+    parser.add_argument("--threshold", type=float, default=None, help="default the model's .json (value_function_manager.py)")
+    parser.add_argument("--margin", type=float, default=None, help="margin L, V < threshold + L switches; default the model's .json")
     parser.add_argument("--no-filter", action="store_true", help="show V but never switch to the safe policy")
     parser.add_argument("--kicks", default="1,1.5,2,2.5,3", help="m/s, each pushed in the 4 directions in turn")
     parser.add_argument("--cmd", default="0.3,0,0", help="walking command vx,vy,wz (training range +-0.5)")
@@ -95,7 +96,8 @@ if __name__ == '__main__':
     p = SafeRLController(args.robot)
     p.state_estimation = 'ground_truth'
     rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=True, debug=False, policy="velocity")
-    vf = vfm.ValueFunctionManager(robot_name=args.robot, model_path=args.model, threshold=args.threshold)
+    vf = vfm.ValueFunctionManager(robot_name=args.robot, model_path=args.model, threshold=args.threshold,
+                                  margin=args.margin)
     vf_every = int(round(0.01 / p.dt))  # 100 Hz
     # the rviz markers at 30 Hz: rviz draws no faster, and every message it has to process slows it
     vis_every = int(round(1.0 / (30 * p.dt)))
@@ -109,7 +111,8 @@ if __name__ == '__main__':
         # real time: the loop takes about 0.6 ms of the 2 ms control period (the overruns at the end
         # tell if it kept up here)
         p.setSpeed(args.speed)
-        p.startFilterTopics(vf.threshold)
+        # the level the filter switches at: threshold plus margin
+        p.startFilterTopics(vf.threshold + vf.margin)
         if args.plot:
             subprocess.Popen(["rqt_plot", "/safety_filter/value/data", "/safety_filter/threshold/data",
                               "/safety_filter/backup/data"])
