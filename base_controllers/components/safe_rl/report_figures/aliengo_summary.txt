@@ -458,3 +458,28 @@ failure rate per kick, m/s (episodes): 1.20 (49), 1.40 (41), 1.60 (51), 1.80 (46
   mps_polygon                6%   10%   24%   28%   48%
 
 Plot: components/safe_rl/report_figures/aliengo_loop_ablation.png
+
+======== closed loop: motor (compare_filter.py)
+168 episodes in every arm (72 left out); reference alone_motor, which recovered from 84
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone_motor | 50.0 | 8.3 | 10.1 | 35.7 | 4.8 | 2.4 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| safe_motor | 18.5 | 3.6 | 1.2 | 12.5 | 1.2 | 1.2 | 100.0 | 0.0 | 100.0 | 66.1 | 54 | 1 | - |
+| abs_motor | 14.3 | 6.0 | 0.6 | 7.7 | 0.6 | 0.6 | 67.3 | 0.0 | 38.1 | 61.1 | 61 | 1 | 0.20 |
+| mps_motor | 14.3 | 4.2 | 0.0 | 7.7 | 3.0 | 2.4 | 78.0 | 0.0 | 57.1 | 58.0 | 60 | 0 | 0.24 |
+
+Episode by episode against abs_motor (failures): failed only with the arm / only with abs_motor, exact McNemar p
+  alone_motor               61 /   1, p 2.73e-17
+  safe_motor                21 /  14, p 0.311
+  mps_motor                 11 /  11, p 1
+
+failure rate per kick, m/s (episodes): 1.20 (31), 1.40 (29), 1.60 (32), 1.80 (38), 2.00 (38)
+  alone_motor                6%   31%   47%   63%   89%
+  safe_motor                 0%   14%   16%   24%   34%
+  abs_motor                  0%   10%    6%   26%   24%
+  mps_motor                  0%   10%    6%   11%   39%
+
+Plot: components/safe_rl/report_figures/aliengo_loop_motor.png

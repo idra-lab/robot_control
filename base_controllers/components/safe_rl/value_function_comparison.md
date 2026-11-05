@@ -227,6 +227,37 @@ dominate the comparison. Options, from cheapest:
    cannot happen and the policies face the real limit.
 3. Retrain the safe policies with a joint-speed penalty or limit (the Go2's in particular).
 
+### 6.1 With the motors' torque-speed curve (option 2)
+
+The policies were trained in Isaac Lab with a DC-motor model: each joint's torque limited to
+effort × (1 ∓ qd / velocity limit), full torque at standstill and none at the velocity limit
+(`saturation_effort = effort_limit`, the URDF limits). Gazebo applied the commanded torque at any
+speed. The robot descriptions now carry this curve as an option (`<safety_controller>` per leg joint,
+applied by gazebo_ros_control's soft limits, on with `LOCOSIM_MOTOR_SPEED_LIMIT=true` or
+`saferl_controller_dataset.py --motor-limit`, off by default and never on the real robot);
+`STAGES=motor run_pipeline.sh` reruns the walking policy, the safe policy, ABS and ours on the same
+pushes, with the same models and calibration (`report_figures/<robot>_loop_motor.md`).
+
+| % failed | Aliengo, no curve | Aliengo, curve | Go2, no curve | Go2, curve |
+|---|---|---|---|---|
+| Walking alone | 48.2 | 50.0 | 48.4 | 46.8 |
+| Safe alone | 22.0 | 18.5 | 36.1 | 32.7 |
+| ABS | 19.0 | **14.3** | 22.6 | **21.2** |
+| Ours | 24.4 | **14.3** | 32.3 | 27.6 |
+| Ours vs ABS, McNemar p | 0.11 | 1.0 | 0.008 | 0.05 |
+
+Paired episodes only: 168 (Aliengo) and 155–156 (Go2) of the 240 pushes ran without missed control
+ticks in every arm (an Isaac Lab training shared the machine during this run).
+
+- The speed-only failures disappear (0–2 %), as they must.
+- **Aliengo: ours equals ABS** (14.3 % both, 11 episodes failed only with each), both better than
+  the safe policy alone (18.5 %).
+- **Go2: ABS stays ahead** (21.2 % against 27.6 %, p = 0.05). The overshoots there partly turn into
+  falls and knee contacts: without the extra speed the safe policy loses some of the pushes it
+  recovered from (falls by the rule, ours 3.9 → 17.9 %).
+- The value functions were trained and calibrated without the curve; retraining them, and the safe
+  policy where it needed the speed (Go2), on the corrected Gazebo is the next step.
+
 ## 7. What this means for the paper
 
 - With the corrected safe set the paper's own metric (Table I) favours ABS on both robots; the paper's
