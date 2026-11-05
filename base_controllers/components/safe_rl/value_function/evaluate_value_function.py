@@ -15,7 +15,10 @@ sample, from the push to the end of the episode.
   dataset recorded from the push start.  The filter switches to the backup policy below its
   threshold, so these have to stay above it.
 * Separation: ROC AUC of V at a time after the push for telling the episodes that fall from those
-  that recover, on the episodes still running then.
+  that recover, on the episodes still running then; and at a time after the first sample, which is
+  the push end for --method abs datasets and the switch to the safe policy for --method mps.
+* Brier score of V against the outcome of each state's episode (fell 0, recovered 1).  For mps the
+  outcome is the safe policy's, for abs the walking policy's.
 * As a filter, per threshold: the falls V warned of (below the threshold before the fall) and how
   long before, and the recovered episodes it would have switched in (false alarms), those after a
   light kick apart.
@@ -31,6 +34,7 @@ import onnxruntime as ort
 STATE = 30  # projected gravity 3, base angular velocity 3, joint positions 12, joint velocities 12
 SAMPLE_DT = 0.02  # s, the policy (and sample) period
 AUC_TIMES = (0.1, 0.2, 0.3, 0.5)  # s after the push starts
+AUC_FROM_FIRST = (0.0, 0.1, 0.2, 0.5)  # s after the first sample
 THRESHOLDS = (0.5, 0.8, 0.9)
 CALIBRATION_TIME = 0.3  # s after the push starts
 
@@ -95,12 +99,21 @@ def main():
         print(f"  the state before the push acts (datasets recorded from the push start), V {before.mean():.3f} "
               f"(min {before.min():.3f})")
 
+    outcome = np.concatenate([np.full(len(r["v"]), 0.0 if r["fell"] else 1.0) for r in runs])
+    print(f"Brier score, V against the outcome of its episode: "
+          f"{np.mean((np.concatenate([r['v'] for r in runs]) - outcome) ** 2):.4f} over {len(outcome)} states")
+
     print("\nSeparation, ROC AUC of V (fell vs recovered) on the episodes still running:")
     for t_auc in AUC_TIMES:
         running = [(r["v"][np.searchsorted(r["t"], t_auc - 1e-6)], r["fell"]) for r in runs
                    if r["t"][-1] >= t_auc - 1e-6]
         v, f = np.array(running).T
         print(f"  {t_auc:.1f} s after the push: AUC {roc_auc(v, f.astype(bool)):.3f}, {len(v)} episodes")
+    for t_auc in AUC_FROM_FIRST:
+        running = [(r["v"][int(round(t_auc / SAMPLE_DT))], r["fell"]) for r in runs
+                   if len(r["v"]) > int(round(t_auc / SAMPLE_DT)) + (1 if r["fell"] else 0)]
+        v, f = np.array(running).T
+        print(f"  {t_auc:.1f} s after the first sample: AUC {roc_auc(v, f.astype(bool)):.3f}, {len(v)} episodes")
 
     # below the light kick hardly any episode falls: an alarm there is false; above it a recovered
     # episode was a near miss, and switching to the backup policy is no mistake
@@ -142,6 +155,8 @@ def main():
             # the episodes still running at each time
             curves = np.array([np.interp(grid, r["t"], r["v"], left=np.nan, right=np.nan) for r, g in zip(runs, group) if g])
             enough = np.sum(np.isfinite(curves), axis=0) >= 5
+            if not enough.any():
+                continue
             ax[0, 0].plot(grid[enough], np.nanmedian(curves[:, enough], axis=0), color=colors[name], lw=2,
                           label=f"{name}, median")
             ax[0, 0].fill_between(grid[enough], *np.nanpercentile(curves[:, enough], [10, 90], axis=0),
