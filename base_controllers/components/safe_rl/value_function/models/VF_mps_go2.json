@@ -1,0 +1,26 @@
+{
+ "method": "mps",
+ "threshold": 0.4386,
+ "margin": 0.0043,
+ "rule": "walking",
+ "margin_eq5": 0.0043,
+ "rule_thresholds": {
+  "walking": 0.4386,
+  "percentile": 0.9087,
+  "risk": 0.9
+ },
+ "percentile": 1.0,
+ "risk": 0.1,
+ "thresholds": {
+  "0.5": 0.0142,
+  "2": 0.9933
+ },
+ "walking_lowest": 0.4428357481956482,
+ "trim": 5.0,
+ "lipschitz_v": 0.0010972298914566636,
+ "lipschitz_f": 3.905658483505249,
+ "threshold_states": 120487,
+ "margin_pairs": 90777,
+ "walking_below_threshold": 0.0,
+ "walking_below_threshold_margin": 0.0
+}

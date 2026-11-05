@@ -769,7 +769,7 @@ def parse_args(argv=None):
                        help="run the controller with its safety filter (--safety-filter)")
     trial.add_argument("--filter-threshold", type=float, default=None, help="default the model's .json")
     trial.add_argument("--filter-margin", type=float, default=None, help="default the model's .json")
-    trial.add_argument("--filter-model", default=None, help="default VF_push_end_<robot>.onnx")
+    trial.add_argument("--filter-model", default=None, help="default value_function_manager.DEFAULT_MODEL")
 
     sweep = sub.add_parser("sweep", help="the adaptive sweep, resumable")
     sweep.add_argument("--robot", default="aliengo")

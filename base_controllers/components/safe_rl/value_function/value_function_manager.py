@@ -4,16 +4,21 @@ import os
 import numpy as np
 import onnxruntime as ort
 
-# The model per robot: models/VF_push_end_<robot>.onnx, exported by export_onnx.py
-# (value_function_report.md); a model's threshold and margin come from the .json next to it, when
-# calibrate_filter.py wrote one.
+# The model per robot: models/VF_<name>_<robot>.onnx, exported by export_onnx.py, and next to it
+# VF_<name>_<robot>.json with the threshold (the walking rule) and the margin calibrate_filter.py
+# computed for it.  The default is the one that fell least in the closed loop of 2026-11-05
+# (value_function_comparison.md): on the Aliengo mps, the paper's value function (the safe policy's
+# chance of bringing the robot to rest), 5.2 % falls against 39 % without the filter; on the Go2
+# absfull, the walking policy's (ABS without its horizon), 8.4 % against 48 %: the Go2's safe policy
+# fails from some walking states, so the paper's value function has to switch too late there.
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+DEFAULT_MODEL = {"aliengo": "mps", "go2": "absfull"}
 DEFAULT_THRESHOLD = {"aliengo": 0.5, "go2": 0.5}  # without a .json
 STATE = 30
 
 
-def default_model(robot_name):
-    return os.path.join(MODELS_DIR, f"VF_push_end_{robot_name}.onnx")
+def default_model(robot_name, name=None):
+    return os.path.join(MODELS_DIR, f"VF_{name or DEFAULT_MODEL.get(robot_name, 'mps')}_{robot_name}.onnx")
 
 
 def model_settings(model_path):

@@ -1,6 +1,6 @@
 """V of the safety filter's value function on a recorded Aliengo run: the joint states
 (/aliengo/joint_states) and the Pronto odometry (/state_estimator_pronto/odom) of a playing bag go
-through ValueFunctionManager (models/VF_push_end_aliengo.onnx, components/safe_rl), which prints
+through ValueFunctionManager (the Aliengo's default model, components/safe_rl), which prints
 when V is below its threshold plus margin.
 
     rosbag play <bag> &

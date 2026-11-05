@@ -1327,7 +1327,8 @@ def parse_args(argv=None):
                              "model's .json")
     parser.add_argument("--filter-model", dest="filter_model", default=None, metavar="ONNX",
                         help="the value function; default "
-                             "components/safe_rl/value_function/models/VF_push_end_<robot>.onnx")
+                             "components/safe_rl/value_function/models/VF_<DEFAULT_MODEL>_<robot>.onnx: mps on the "
+                             "Aliengo, absfull on the Go2")
     return parser.parse_args(argv)
 
 
