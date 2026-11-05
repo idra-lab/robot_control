@@ -23,6 +23,10 @@
 #               and at the paper's percentile threshold (mps_pct), without the margin (mps_L0), switching
 #               on a single value (mps_k1), switching back after 2 s (abs_back, mps_back), mps_early;
 #               aliengo also mps_polygon
+#   motor       (not in the default STAGES) the closed loop again with Gazebo limiting each joint's
+#               torque by its speed, Isaac Lab's DCMotor curve the policies were trained with
+#               (--motor-limit): the walking policy alone, the safe policy alone, abs, mps, as <arm>_motor;
+#               the models and their calibration unchanged
 #   summary     summarize.sh: figures and numbers in FIGURES/
 #
 #   run_pipeline.sh [robot ...]        default: aliengo go2;  STAGES="train calibrate" for some stages
@@ -140,15 +144,15 @@ for robot in $ROBOTS; do
     done
   fi
 
+  loop() {
+    local name=$1; shift
+    batches $((seed + 500)) 8 $LOOP_EPISODES $D/closed_loop/$name $R --kicks $kicks --episode-length $LOOP_LENGTH "$@"
+  }
+  filter() { echo "--filter $MODELS/VF_$1_$robot.onnx --no-switch-back"; }
+  setting() { json $MODELS/VF_$1_$robot.json "$2"; }
+  pct() { setting $1 "['rule_thresholds']['percentile']"; }
   if stage loop; then
     stamp "$robot: closed loop"
-    loop() {
-      local name=$1; shift
-      batches $((seed + 500)) 8 $LOOP_EPISODES $D/closed_loop/$name $R --kicks $kicks --episode-length $LOOP_LENGTH "$@"
-    }
-    filter() { echo "--filter $MODELS/VF_$1_$robot.onnx --no-switch-back"; }
-    setting() { json $MODELS/VF_$1_$robot.json "$2"; }
-    pct() { setting $1 "['rule_thresholds']['percentile']"; }
     loop alone
     loop safe --backup-delay 0
     for name in $models; do loop $name $(filter $name); done
@@ -158,6 +162,13 @@ for robot in $ROBOTS; do
     loop mps_k1 $(filter mps) --threshold $(setting mps "['rule_thresholds']['walking_k1']") \
       --margin $(setting mps "['margin_k1']") --min-switch 1
     for name in abs mps; do loop ${name}_back --filter $MODELS/VF_${name}_$robot.onnx; done
+  fi
+
+  if stage motor; then
+    stamp "$robot: closed loop with the motors' torque-speed curve"
+    loop alone_motor --motor-limit
+    loop safe_motor --backup-delay 0 --motor-limit
+    for name in abs mps; do loop ${name}_motor $(filter $name) --motor-limit; done
   fi
 
   if stage summary; then

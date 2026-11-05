@@ -74,4 +74,5 @@ table consecutive mps alone mps mps_k1
 table threshold - alone safe abs abs_walk mps_pct mps_k1 mps_L0 mps mps_early mps_polygon
 table switch_back - alone abs abs_back mps mps_back
 table ablation mps alone mps mps_early mps_polygon
+table motor abs_motor alone_motor safe_motor abs_motor mps_motor
 } 2>&1 | grep -v "GPU/TPU" | tee $FIGURES/${robot}_summary.txt
