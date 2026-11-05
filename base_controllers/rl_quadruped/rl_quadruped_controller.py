@@ -98,11 +98,12 @@ GC_THRESHOLDS = (2000, 10)      # gen0, gen1; the full collection runs only at r
 
 # safety filter (--safety-filter, components/safe_rl/README.md): V at FILTER_RATE from
 # FILTER_START_DELAY s after the walking policy starts, as it was tested (the value function never
-# saw the gait start), and FILTER_RECOVERY s after the filter hands the robot back to the walking
-# policy (the paper's recovery time, Sec. III-D)
+# saw the gait start).  After the filter hands the robot back to the walking policy it keeps
+# checking: ignoring V for a recovery time (the paper's robot experiments, Sec. III-D) would leave
+# the walking policy unshielded; V staying above the level for 2 s before handing back is what keeps
+# the switch from chattering.
 FILTER_RATE = 100.0             # Hz
 FILTER_START_DELAY = 1.0        # s
-FILTER_RECOVERY = 1.0           # s
 
 # _checkActuation
 ACTUATION_TORQUE_MIN = 2.0      # Nm commanded before judging
@@ -944,10 +945,7 @@ class RlQuadrupedController(BaseController):
                               f"kd={self.policy.kd:.2f}, {self.policy.policy_rate:.0f} Hz"
                               + (", the safety filter ended its safe stop" if back_from_filter else ""))
             self._filter_backup = False
-            if back_from_filter:
-                if self.safety_filter is not None:
-                    self._filter_from = self.time + FILTER_RECOVERY
-            else:
+            if not back_from_filter:
                 self._resetSafetyFilter()
         self._stepPolicy(self.command.get_velocity_cmd())
         if self.state is State.RL and not self._filterSaysWalk():
