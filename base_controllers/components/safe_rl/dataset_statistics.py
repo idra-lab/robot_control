@@ -121,7 +121,7 @@ def main():
     states = np.concatenate([samples[:, :STATE], samples[:, STATE:2 * STATE]])
 
     print(f"\nSamples: {len(samples)}, labelled fallen {int(samples[:, -2].sum())}, "
-          f"success (captured or survived) {int(samples[:, -1].sum())}")
+          f"success (captured or survived; mps: at rest) {int(samples[:, -1].sum())}")
 
     if episodes:
         ep = np.concatenate(episodes)
@@ -131,6 +131,9 @@ def main():
               f"control ticks missed {int((ep['discarded'] == 3).sum())})")
         ep = ep[kept]
         fallen, captured, survived = ep["fallen"] > 0, ep["captured"] > 0, ep["survived"] > 0
+        if "method" in ep.dtype.names:
+            # --method mps: the success is the safe policy at rest (static equilibrium), counted as captured
+            captured |= (ep["method"] == 1) & (ep["static"] > 0)
         neither = ~fallen & ~captured & ~survived
         print(f"  fallen {fallen.sum()}, captured {captured.sum()}, survived {survived.sum()}"
               + (f", ended without a label {neither.sum()}" if neither.any() else ""))
