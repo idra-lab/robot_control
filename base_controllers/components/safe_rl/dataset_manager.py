@@ -6,17 +6,28 @@ from termcolor import colored
 # Per robot.  Fall rule: run to the ground, the walking policy recovered from at most 29 deg of
 # inclination (Aliengo, 320 pushed episodes; Go2 15 deg, 200), the base never below 0.27 m (Go2
 # 0.26 m), and every fall went past 64 deg (Go2 85 deg): the thresholds sit in those gaps.  The kick
-# range spans the robot's fall boundary, with about 45 % of the episodes falling.
+# range spans the robot's fall boundary, with about 45 % of the episodes falling.  foot_radius is the
+# foot collision sphere's, for the contact test of the support polygon.
 ROBOT_SETTINGS = {
-    "aliengo": {"INCLINATION_THRESHOLD": 45.0, "FALL_HEIGHT_THRESHOLD": 0.2, "kick_range": (0.0, 3.0)},
-    "go2": {"INCLINATION_THRESHOLD": 45.0, "FALL_HEIGHT_THRESHOLD": 0.2, "kick_range": (0.0, 2.5)},
+    "aliengo": {"INCLINATION_THRESHOLD": 45.0, "FALL_HEIGHT_THRESHOLD": 0.2, "kick_range": (0.0, 3.0),
+                "foot_radius": 0.0265},
+    "go2": {"INCLINATION_THRESHOLD": 45.0, "FALL_HEIGHT_THRESHOLD": 0.2, "kick_range": (0.0, 2.5),
+            "foot_radius": 0.022},
 }
 
+# The two ways of collecting the value function's data (the paper, Sec. II-B and its ABS baseline):
+#   abs: the walking policy throughout; V(x) is about whether it recovers (ABS, the baseline)
+#   mps: the walking policy until a switch shortly after the push, then the safe policy at zero
+#        command; recorded from the switch, V(x) is whether the safe policy started at x reaches
+#        the invariant set without a fall (the paper's value function)
+METHODS = ("abs", "mps")
 
 # the episodes CSV written next to a dataset, one row per episode (README.md)
-EPISODE_COLUMNS = ("episode", "cmd_vx", "cmd_vy", "cmd_wz", "push_time", "kick", "kick_dir", "base_vx", "base_vy",
-                   "fallen", "captured", "survived", "end_time", "switch_time", "overruns", "max_incl", "min_height",
-                   "final_height", "cp_hold_max", "n_samples", "row", "discarded")
+EPISODE_COLUMNS = ("episode", "method", "cmd_vx", "cmd_vy", "cmd_wz", "push_time", "kick", "kick_dir", "base_vx",
+                   "base_vy", "backup_time", "fallen", "captured", "survived", "static", "polygon", "timeout",
+                   "end_time", "static_time", "switch_time", "overruns", "max_incl", "min_height", "final_height",
+                   "cp_hold_max", "min_hip", "min_knee", "paper_fall", "knee_contact", "jl_pos", "jl_vel",
+                   "n_samples", "row", "discarded")
 
 
 class DatasetManager():
@@ -33,13 +44,35 @@ class DatasetManager():
         # s the capture point has to stay in that radius: a robot can stand still for 0.2 s on its
         # feet and then fall (2 of 91 captures at 0.2 s, none of 54 at 0.5 s)
         self.CAPTURE_HOLD = 0.5
+        # The paper's invariant set X_inv: static equilibrium (Sec. II-D, III-B), trunk and joint
+        # angular velocities below STATIC_ANG_VEL and trunk linear velocity below STATIC_LIN_VEL,
+        # averaged over the last XINV_HOLD s: at rest the safe policy keeps correcting and the torque
+        # noise shakes the joints, so the fastest of the 12 joints is at 0.1-0.3 rad/s at any instant
+        # (0.1-0.2 without noise), while the robot does not move; or, the larger set for walking (Sec.
+        # II-A, III-C), the capture point inside the support polygon scaled by POLYGON_SCALE about its
+        # centre, all four feet on the ground (foot centre less than FOOT_CONTACT_GAP above its
+        # radius), for XINV_HOLD s.
+        self.STATIC_ANG_VEL = 0.1  # rad/s
+        self.STATIC_LIN_VEL = 0.1  # m/s
+        self.POLYGON_SCALE = 0.8
+        self.FOOT_CONTACT_GAP = 0.01  # m
+        self.XINV_HOLD = 0.2  # s
+        # The paper's failures, counted for the evaluation only (Sec. III-A, Table I): a fall is the
+        # base or a hip joint below PAPER_FALL_HEIGHT; a knee joint below KNEE_CONTACT_HEIGHT touches
+        # the ground; a joint position or velocity past its URDF limit is a violation.
+        self.PAPER_FALL_HEIGHT = 0.1  # m
+        self.KNEE_CONTACT_HEIGHT = 0.035  # m, about the radius of the lower leg at the knee
         self.G = 9.81  # gravitational constant
         self.policy_frequency = 50  # Hz
         self.decimation = (1 / self.quadruped.dt) * (1 / self.policy_frequency)
+        # a sample every sample_every control ticks: the policy period by default; 100 Hz, the
+        # safety filter's rate, for the filter's calibration (calibrate_filter.py)
+        self.sample_every = int(self.decimation)
 
         # -------------------------------
         # Episode: reset, walk at a command, push, recover or fall
         # -------------------------------
+        self.method = "abs"
         # Velocity command (vx, vy, wz), drawn as the walking policy's training draws it (safe_rl
         # velocity_env_cfg.py, CommandsCfg): uniform in +-cmd_range, rel_standing of the episodes at
         # zero and rel_yaw_only of the others only turning.  Never outside the training range.
@@ -50,17 +83,40 @@ class DatasetManager():
         # settled by then (~1 s) and the window randomises its phase.  It is the push benchmark's
         # (rl_quadruped/push_sweep.py), so kicks compare with its k50: a horizontal force of
         # robot mass x kick / push_duration on the base for push_duration s, the kick uniform in
-        # kick_range m/s, the direction uniform in the base frame.
+        # kick_range m/s (or drawn from kicks, a list, when set), the direction uniform in the base
+        # frame.
         self.push_window = (2.0, 3.0)
         self.kick_range = (0.0, 3.0)  # per robot, ROBOT_SETTINGS
+        self.kicks = None
         self.push_duration = 0.2
-        # The episode ends at a fall, at capture (capture point within CP_SAFE_RADIUS for
+        # abs: the episode ends at a fall, at capture (capture point within CP_SAFE_RADIUS for
         # CAPTURE_HOLD s, from the end of the push) or with the push survived for post_push_time s
         # after its end.
         self.post_push_time = 3.0
-        # None: the walking policy throughout.  Else the safe policy takes over, at zero command,
-        # backup_delay s after the push starts.
+        # mps: the walking policy keeps the robot for a warm-up uniform in switch_window s after the
+        # push ends, then the safe policy takes over at zero command.  In walk_switch_share of the
+        # episodes there is no push and the switch comes at the push time, during undisturbed
+        # walking: the filter evaluates V on walking states too.  The episode ends at a fall, once
+        # the robot is in both invariant sets, or mps_timeout s after the switch (timeout, no label:
+        # the training leaves the episode out; the safe policy takes up to about 4 s to settle).
+        self.switch_window = (0.0, 0.5)
+        # "push_start": the warm-up counts from the push start, so the safe policy may take over
+        # while the force still acts (the filter can switch then too)
+        self.switch_from = "push_end"
+        self.walk_switch_share = 0.2
+        self.mps_timeout = 6.0
+        # abs: None, the walking policy throughout.  Else the safe policy takes over, at zero
+        # command, backup_delay s after the push starts (the safe policy alone, for comparison).
         self.backup_delay = None
+        # Torque noise added to the policy's torques (the paper, Sec. II-B: additive Gaussian noise
+        # on the joint torques).  "ou": an Ornstein-Uhlenbeck process per joint, stationary std
+        # noise_level x the joint's torque limit and time constant noise_tau s, throughout the
+        # episode, so torque errors persist over a few control periods as a real actuator's do.
+        # "white": independent per tick, std noise_level Nm, from the push on (the noise of the
+        # datasets of 2026-10-29).  "none".
+        self.noise_model = "ou"
+        self.noise_level = 0.04
+        self.noise_tau = 0.05
         if quadruped.robot_name not in ROBOT_SETTINGS:
             raise ValueError(f"no dataset settings for {quadruped.robot_name}: add it to ROBOT_SETTINGS")
         for name, value in ROBOT_SETTINGS[quadruped.robot_name].items():
@@ -72,6 +128,11 @@ class DatasetManager():
         self.capture_check_tilt = self.INCLINATION_THRESHOLD
         # True: samples from the push start, with the walking state just before the push (test data)
         self.record_from_push_start = False
+        # Calibration runs of the safety filter (calibrate_filter.py): record_from_time, samples from
+        # that time on, walking included; episode_length, every episode lasts that long (s) unless the
+        # robot falls, capture off, as the paper's 20 s simulations.
+        self.record_from_time = None
+        self.episode_length = None
         # None, or the safety filter (a ValueFunctionManager) as saferl_controller.py runs it: V at
         # vf_rate Hz from vf_from s on, and the safe policy at zero command while the filter says
         # so.  The same seed with and without it gives the same episodes (compare_filter.py).
@@ -79,6 +140,7 @@ class DatasetManager():
         self.vf_rate = 100.0
         self.vf_from = 1.0
         self.episode = {}
+        self._frames = None
 
     # -------------------------------
     # Capture Point Computation
@@ -92,6 +154,59 @@ class DatasetManager():
     # -------------------------------
     def check_fallen(self, base_z_position, inclination_deg):
         return inclination_deg > self.INCLINATION_THRESHOLD or base_z_position < self.FALL_HEIGHT_THRESHOLD
+
+    def x_inv(self):
+        """(static, polygon): whether the robot is now in each of the paper's invariant sets, before
+        any hold (see XINV_HOLD)."""
+        robot = self.quadruped
+        # the velocities over the last XINV_HOLD s, a running sum over a ring buffer
+        velocities = np.concatenate([robot.qd, robot.baseTwistW[3:6], robot.baseTwistW[:3]])
+        self._vel_sum += velocities - self._vel_window[self._vel_next]
+        self._vel_window[self._vel_next] = velocities
+        self._vel_next = (self._vel_next + 1) % len(self._vel_window)
+        self._vel_count = min(self._vel_count + 1, len(self._vel_window))
+        mean = np.abs(self._vel_sum) / len(self._vel_window)
+        static = (self._vel_count == len(self._vel_window) and np.max(mean[:15]) < self.STATIC_ANG_VEL
+                  and np.max(mean[15:]) < self.STATIC_LIN_VEL)
+        feet = np.array([robot.W_contacts[leg] for leg in (0, 2, 3, 1)])  # lf, rf, rh, lh: around the polygon
+        if np.any(feet[:, 2] > self.foot_radius + self.FOOT_CONTACT_GAP):
+            return static, False
+        cp = self.compute_capture_point(robot.basePoseW[:2], robot.baseTwistW[:2], robot.basePoseW[2])
+        centre = feet[:, :2].mean(axis=0)
+        corners = centre + self.POLYGON_SCALE * (feet[:, :2] - centre)
+        edges = np.roll(corners, -1, axis=0) - corners
+        to_cp = cp - corners
+        side = edges[:, 0] * to_cp[:, 1] - edges[:, 1] * to_cp[:, 0]
+        return static, bool(np.all(side >= 0) or np.all(side <= 0))
+
+    def _held(self, name, inside, now):
+        """True once inside has held for XINV_HOLD s without a break."""
+        if not inside:
+            self._since[name] = None
+            return False
+        if self._since[name] is None:
+            self._since[name] = now
+        return now - self._since[name] >= self.XINV_HOLD - 1e-6
+
+    def track_failures(self):
+        """The paper's failures since the push (episode columns paper_fall, knee_contact, jl_pos,
+        jl_vel, min_hip, min_knee): hips and knees from the frame placements updateKinematics
+        computed this tick."""
+        robot, ep = self.quadruped, self.episode
+        model, data = robot.robot.model, robot.robot.data
+        if self._frames is None:
+            legs = [name[:2] for name in robot.ee_frames]
+            idx_v = [model.idx_vs[model.getJointId(name)] for name in robot.joint_names]
+            self._frames = {"hip": [model.getFrameId(leg + "_upperleg") for leg in legs],
+                            "knee": [model.getFrameId(leg + "_lowerleg") for leg in legs],
+                            "vel_limit": model.velocityLimit[idx_v]}
+        height = lambda ids: min(robot.mapBaseToWorld(data.oMf[i].translation)[2] for i in ids)
+        hip, knee = height(self._frames["hip"]), height(self._frames["knee"])
+        ep["min_hip"], ep["min_knee"] = min(ep["min_hip"], hip), min(ep["min_knee"], knee)
+        ep["paper_fall"] |= robot.basePoseW[2] < self.PAPER_FALL_HEIGHT or hip < self.PAPER_FALL_HEIGHT
+        ep["knee_contact"] |= knee < self.KNEE_CONTACT_HEIGHT
+        ep["jl_pos"] |= bool(np.any(robot.q < self._q_lower) or np.any(robot.q > self._q_upper))
+        ep["jl_vel"] |= bool(np.any(np.abs(robot.qd) > self._frames["vel_limit"]))
 
     def check_termination(self):
         # -------------------------------
@@ -119,37 +234,56 @@ class DatasetManager():
             ep["max_incl"] = max(ep["max_incl"], inclination_after)
             ep["min_height"] = min(ep["min_height"], float(z_after))
             ep["tilted"] = ep["tilted"] or inclination_after > self.capture_check_tilt
+            if self.step % 5 == 0:
+                self.track_failures()
         if cp_inside and now >= self.capture_from and not ep["tilted"]:
             self.cp_run_from = now if self.cp_run_from is None else self.cp_run_from
             ep["cp_hold_max"] = max(ep["cp_hold_max"], now - self.cp_run_from)
         else:
             self.cp_run_from = None
 
-        # when self.capture_flag = 1 it means we are stable: the capture point within CP_SAFE_RADIUS
-        # for CAPTURE_HOLD s.  A single tick inside is not enough, the base can be momentarily still
-        # while the robot tips over its feet.
-        if self.capture and cp_inside and self.quadruped.time >= self.capture_from and self.fallen_flag == 0:
+        # abs: when self.capture_flag = 1 it means we are stable: the capture point within
+        # CP_SAFE_RADIUS for CAPTURE_HOLD s.  A single tick inside is not enough, the base can be
+        # momentarily still while the robot tips over its feet.
+        if (self.method == "abs" and self.capture and cp_inside and self.quadruped.time >= self.capture_from
+                and self.fallen_flag == 0):
             if self.cp_inside_since is None:
                 self.cp_inside_since = self.quadruped.time
             if self.quadruped.time - self.cp_inside_since >= self.CAPTURE_HOLD - 1e-6:
                 self.capture_flag = 1
         else:
             self.cp_inside_since = None
-        # survived the push
-        if self.quadruped.time >= self.end_time - 1e-6 and self.fallen_flag == 0 and self.capture_flag == 0:
-            self.survived_flag = 1
+        # the paper's invariant sets, from xinv_from on (the push end, or the switch to the safe
+        # policy); static_time is when static equilibrium first held, after the push start
+        if now >= self.xinv_from and self.fallen_flag == 0:
+            static, polygon = self.x_inv()
+            # static is averaged over XINV_HOLD s already
+            if static and not self.static_flag:
+                self.static_flag = 1
+                ep["static_time"] = now - ep["push_time"]
+            if self._held("polygon", polygon, now):
+                self.polygon_flag = 1
+        at_end = self.quadruped.time >= self.end_time - 1e-6 and self.fallen_flag == 0
+        if self.method == "mps":
+            self.timeout_flag = int(at_end and not (self.static_flag and self.polygon_flag))
+            done = self.fallen_flag or (self.static_flag and self.polygon_flag) or self.timeout_flag
+        else:
+            # survived the push
+            if at_end and self.capture_flag == 0:
+                self.survived_flag = 1
+            done = self.capture_flag or self.survived_flag or self.fallen_flag
 
         # base and capture point in rviz, at 30 Hz (published at the end of the tick)
         if self.step % self.vis_every == 0:
             self.quadruped.ros_pub.add_marker(np.append(base_pos_xy, 0.), radius=0.1, color="blue")
             self.quadruped.ros_pub.add_marker(np.append(cp, 0.), radius=0.1, color="red")
-        return self.capture_flag or self.survived_flag or self.fallen_flag
+        return done
 
     def store_observations(self):
         # -------------------------------
         # Save Observation Transition for VF Learning
         # -------------------------------
-        if self.step % self.decimation == 0:
+        if self.step % self.sample_every == 0:
             body_ang_vel = self.quadruped.b_R_w @ self.quadruped.baseTwistW[3:]
             proj_gravity = self.quadruped.b_R_w.dot(np.array([0, 0, -1]))
             # dimension of observation vector = 3+3+12+12=30
@@ -159,15 +293,21 @@ class DatasetManager():
                 self.quadruped.q.astype(np.float32),
                 self.quadruped.qd.astype(np.float32)
             ))
-            # dimension of full_obs vector = 30+30+1+1=62; the last is success: captured, or the
-            # push survived for post_push_time
-            success = float(self.capture_flag or self.survived_flag)
+            # dimension of full_obs vector = 30+30+1+1=62; the last is success: abs, captured or the
+            # push survived for post_push_time; mps, in static equilibrium (the other invariant set
+            # in the _xinv.npy file next to the dataset)
+            if self.method == "mps":
+                success = float(self.static_flag)
+            else:
+                success = float(self.capture_flag or self.survived_flag)
             full_obs = np.concatenate([self.obs_t_, self.obs_tp1_, [float(self.fallen_flag), success]])
-            # collect data from the end of the push on: V of a state is whether the robot recovers
-            # from it with no further push.  Recorded from the push start, a walking state about to
-            # be pushed carried the push's outcome, and walking itself was learnt as unsafe.
+            # collect data from record_from on.  abs: from the end of the push, V of a state is
+            # whether the robot recovers from it with no further push; recorded from the push start,
+            # a walking state about to be pushed carried the push's outcome, and walking itself was
+            # learnt as unsafe.  mps: from the switch to the safe policy.
             if self.quadruped.time >= self.record_from:
                 self.observations.append(full_obs)
+                self.xinv_flags.append((float(self.static_flag), float(self.polygon_flag)))
 
             # store last observation
             self.obs_t_ = self.obs_tp1_
@@ -201,6 +341,12 @@ class DatasetManager():
         idx = [model.idx_qs[model.getJointId(name)] for name in self.quadruped.joint_names]
         return model.lowerPositionLimit[idx], model.upperPositionLimit[idx]
 
+    def torque_limits(self):
+        """Torque limits of the joints, in the order of quadruped.q."""
+        model = self.quadruped.robot.model
+        idx = [model.idx_vs[model.getJointId(name)] for name in self.quadruped.joint_names]
+        return model.effortLimit[idx]
+
     def sample_command(self):
         """A velocity command (vx, vy, wz) drawn as in the walking policy's training."""
         cmd = np.random.uniform(-self.cmd_range, self.cmd_range)
@@ -210,48 +356,92 @@ class DatasetManager():
             cmd[:2] = 0.0
         return cmd
 
+    def sample_kick(self):
+        if self.kicks is not None:
+            return float(np.random.choice(self.kicks))
+        return np.random.uniform(*self.kick_range)
+
+    def torque_noise(self, noise):
+        """The torque noise of this tick, from the previous one (see noise_model)."""
+        robot = self.quadruped
+        if self.noise_model == "ou":
+            decay = np.exp(-robot.dt / self.noise_tau)
+            return decay * noise + self._noise_std * np.sqrt(1.0 - decay ** 2) * np.random.normal(size=12)
+        if self.noise_model == "white" and robot.time >= self.warmup_time:
+            return np.random.normal(0, self.noise_level, size=12)
+        return np.zeros(12)
+
     # -------------------------------
     # Main Function: Single Simulation Episode
     # -------------------------------
-    def run_single_simulation(self, actor_network, noise_std=1.0):
+    def run_single_simulation(self, actor_network):
         robot = self.quadruped
         # init vars
         self.fallen_flag = 0
         self.capture_flag = 0
         self.survived_flag = 0
+        self.static_flag = 0
+        self.polygon_flag = 0
+        self.timeout_flag = 0
         self.cp_inside_since = None
         self.cp_run_from = None
+        self._since = {"polygon": None}
+        self._vel_window = np.zeros((int(round(self.XINV_HOLD / robot.dt)), 18))
+        self._vel_sum, self._vel_next, self._vel_count = np.zeros(18), 0, 0
         self.observations = []
+        self.xinv_flags = []
         self.obs_t_ = []
         self.obs_tp1_ = []
 
+        # every draw of the episode, in the same order whatever the method, so that runs with the
+        # same seed share command, push and switch (e.g. with and without the safety filter)
         cmd = self.sample_command()
         actor_network.velocity_cmd = cmd.copy()
         # the push, on the control tick grid
         push_step = int(round(np.random.uniform(*self.push_window) / robot.dt))
         push_time = round(push_step * robot.dt, 4)
-        kick = np.random.uniform(*self.kick_range)
+        kick = self.sample_kick()
         kick_dir = np.random.uniform(-np.pi, np.pi)  # base frame, 0 forward, pi/2 left
-        # the torque noise starts with the push, the samples once it is over
+        walk_switch = np.random.uniform() < self.walk_switch_share
+        warm_up = np.random.uniform(*self.switch_window)
         self.warmup_time = push_time
         self.capture_from = push_time + self.push_duration
-        self.record_from = push_time if self.record_from_push_start else self.capture_from
-        self.end_time = self.capture_from + self.post_push_time
-        backup_time = np.inf if self.backup_delay is None else push_time + self.backup_delay
+        if self.method == "mps":
+            if walk_switch:
+                kick, backup_time = 0.0, push_time
+            else:
+                backup_time = round((push_time if self.switch_from == "push_start" else self.capture_from) + warm_up, 4)
+            self.record_from, self.xinv_from = backup_time, backup_time
+            self.end_time = backup_time + self.mps_timeout
+        else:
+            backup_time = np.inf if self.backup_delay is None else push_time + self.backup_delay
+            self.record_from = push_time if self.record_from_push_start else self.capture_from
+            self.xinv_from = self.capture_from
+            self.end_time = self.capture_from + self.post_push_time
+        if self.record_from_time is not None:
+            self.record_from = self.record_from_time
+        if self.episode_length is not None:
+            self.end_time = self.episode_length
         print(f"Nominal policy velocity command {actor_network.velocity_cmd}, push at {push_time} s, "
-              f"kick {kick:.2f} m/s at {np.degrees(kick_dir):.0f} deg")
+              f"kick {kick:.2f} m/s at {np.degrees(kick_dir):.0f} deg"
+              + (f", safe policy from {backup_time} s" if np.isfinite(backup_time) else ""))
         # what the episode was, saved with the dataset for dataset_statistics.py
         self.episode = {"cmd": actor_network.velocity_cmd.copy(), "push_time": push_time, "kick": kick,
                         "kick_dir": kick_dir, "base_vel": np.full(2, np.nan), "fell_before_push": False,
+                        "backup_time": backup_time - push_time if np.isfinite(backup_time) else np.nan,
                         "switch_time": np.nan, "overruns": 0, "max_incl": 0.0, "min_height": np.inf,
-                        "tilted": False, "cp_hold_max": -1.0}
+                        "tilted": False, "cp_hold_max": -1.0, "static_time": np.nan, "min_hip": np.inf,
+                        "min_knee": np.inf, "paper_fall": False, "knee_contact": False, "jl_pos": False,
+                        "jl_vel": False}
         nominal = True
         vf_every = int(round(1.0 / (self.vf_rate * robot.dt)))
         self.vis_every = int(round(1.0 / (30 * robot.dt)))
         if self.value_function is not None:
             self.value_function.reset()
+        self._noise_std = self.noise_level * self.torque_limits()
+        noise = np.random.normal(0, self._noise_std) if self.noise_model == "ou" else np.zeros(12)
 
-        max_steps = int(round(self.end_time / robot.dt)) + 2 * int(self.decimation)
+        max_steps = int(round(self.end_time / robot.dt)) + 2 * self.sample_every
         last_tick = None
         for self.step in range(max_steps):
             robot.updateKinematics()
@@ -261,12 +451,12 @@ class DatasetManager():
                 self.episode["fell_before_push"] = True
                 break
             self.store_observations()
-            # Stop at a fall, capture or survival, on a sample so that it carries the label
-            if robot.time >= self.warmup_time and terminate and self.step % self.decimation == 0:
+            # Stop at the episode's end, on a sample so that it carries the label
+            if robot.time >= self.warmup_time and terminate and self.step % self.sample_every == 0:
                 print(f"Termination at {robot.time}")
                 break
 
-            if self.step == push_step:
+            if self.step == push_step and kick > 0:
                 yaw = robot.basePoseW[5]
                 force = robot.robot.robotMass * kick / self.push_duration
                 robot.push(force * np.array([np.cos(yaw + kick_dir), np.sin(yaw + kick_dir)]), self.push_duration)
@@ -305,9 +495,8 @@ class DatasetManager():
             robot.baseTwistW_des[5] = actor_network.velocity_cmd[2]
 
             # Add noise to simulate real-world actuation
-            robot.tau_ffwd = np.zeros(12)
-            if robot.time >= self.warmup_time:
-                robot.tau_ffwd += np.random.normal(0, noise_std, size=robot.tau_ffwd.shape)
+            noise = self.torque_noise(noise)
+            robot.tau_ffwd = noise.copy()
             # switch off wbc
             robot.grForcesW_des = np.zeros((12))
 
@@ -330,9 +519,10 @@ class DatasetManager():
     # -------------------------------
     # Run a Batch of Simulations and Save Results
     # -------------------------------
-    def run_batch_simulations(self, actor_network, n_episodes=100, save_path="results", noise_std=1.0, seed=None):
+    def run_batch_simulations(self, actor_network, n_episodes=100, save_path="results", seed=None):
         os.makedirs(save_path, exist_ok=True)
         all_obs = []
+        all_xinv = []
         stats = []
         episodes = []  # one row per episode, saved next to the dataset
         max_len = 0
@@ -342,6 +532,7 @@ class DatasetManager():
         # 2 pi off (a wrapped joint) would put states in the dataset the real robot never shows.
         # 0.5 rad of slack covers the soft joint stops overshooting in a hard fall.
         q_lower, q_upper = self.joint_range()
+        self._q_lower, self._q_upper = q_lower, q_upper
         # every episode starts standing still in the policy's default posture, feet 3 mm above the
         # ground (standingHeight is to the foot centres)
         q_reset = np.array(actor_network.q_def, dtype=np.float64)
@@ -367,15 +558,19 @@ class DatasetManager():
             # history, previous action and decimation phase start over, seeded from the reset robot
             actor_network.reset()
 
-            obs, fallen, captured, survived = self.run_single_simulation(actor_network=actor_network,
-                                                                         noise_std=noise_std)
-            print(colored(f"Fallen {fallen}, Captured {captured}, Survived {survived}", "green"))
+            obs, fallen, captured, survived = self.run_single_simulation(actor_network=actor_network)
+            print(colored(f"Fallen {fallen}, Captured {captured}, Survived {survived}, static {self.static_flag}, "
+                          f"polygon {self.polygon_flag}, timeout {self.timeout_flag}", "green"))
             ep = self.episode
-            row = dict(episode=i, push_time=ep["push_time"], kick=ep["kick"], kick_dir=ep["kick_dir"], fallen=fallen,
-                       captured=captured, survived=survived, end_time=float(np.ravel(self.quadruped.time)[0]),
-                       n_samples=len(obs), row=len(all_obs), discarded=0)
+            row = dict(episode=i, method=METHODS.index(self.method), push_time=ep["push_time"], kick=ep["kick"],
+                       kick_dir=ep["kick_dir"], fallen=fallen, captured=captured, survived=survived,
+                       static=self.static_flag, polygon=self.polygon_flag, timeout=self.timeout_flag,
+                       end_time=float(np.ravel(self.quadruped.time)[0]), n_samples=len(obs), row=len(all_obs),
+                       discarded=0)
             row.update(zip(("cmd_vx", "cmd_vy", "cmd_wz"), ep["cmd"]), base_vx=ep["base_vel"][0], base_vy=ep["base_vel"][1])
-            row.update((k, ep[k]) for k in ("switch_time", "overruns", "max_incl", "min_height", "final_height", "cp_hold_max"))
+            row.update((k, ep[k]) for k in ("backup_time", "switch_time", "overruns", "max_incl", "min_height",
+                                            "final_height", "cp_hold_max", "static_time", "min_hip", "min_knee",
+                                            "paper_fall", "knee_contact", "jl_pos", "jl_vel"))
             episodes.append(row)
             if ep["fell_before_push"] or not len(obs):
                 row.update(row=-1, discarded=2)
@@ -392,9 +587,11 @@ class DatasetManager():
                               f"discarded", "red"))
                 row.update(row=-1, discarded=1)
                 continue
-            # the episode is one row, from the push end to the episode end, the fall labelled on the last sample:
-            # through the TD target every state of a falling episode learns that it leads there
+            # the episode is one row, from record_from to the episode end, the outcome labelled on the
+            # last sample: through the TD target every state of a falling episode learns that it
+            # leads there
             all_obs.append(obs)
+            all_xinv.append(np.array(self.xinv_flags, dtype=np.float32))
             max_len = max(max_len, len(obs))
             stats.append((fallen, captured, survived, len(obs)))
 
@@ -404,20 +601,30 @@ class DatasetManager():
         # Pad observation arrays to same length in case of early termination (com comverget to cop)
         obs_dim = all_obs[0].shape[1]
         padded_obs = np.zeros((len(all_obs), max_len, obs_dim), dtype=np.float32)
+        padded_xinv = np.zeros((len(all_obs), max_len, 2), dtype=np.float32)
 
         for i, episode in enumerate(all_obs):
             padded_obs[i, :len(episode), :] = episode
+            padded_xinv[i, :len(episode), :] = all_xinv[i]
 
         stats = np.array(stats, dtype=int)
 
         np.save(os.path.join(save_path, "observations_dataset_abs_test.npy"), padded_obs)
-        # row indexes the dataset's first axis (-1: discarded); kick_dir and base velocity at the push
-        # in the base frame; switch_time: s after the push start that the safety filter (if any) first
-        # chose the safe policy, nan if never; overruns: control ticks the loop missed; max_incl (deg),
-        # min_height (m) after the push; cp_hold_max (s, -1: never inside); discarded 1: joint range, 2: fell before the
-        # push or no sample recorded, 3: over 1 % of the ticks missed
+        # per sample, whether the robot has been in static equilibrium and in the support polygon
+        # set (the paper's two X_inv): train_value_function.py --x-inv picks one for mps
+        np.save(os.path.join(save_path, "observations_dataset_abs_test_xinv.npy"), padded_xinv)
+        # row indexes the dataset's first axis (-1: discarded); method 0 abs, 1 mps; kick_dir and base
+        # velocity at the push in the base frame; backup_time: s after the push start the safe policy
+        # took over by schedule (mps, --backup-delay), nan if never; static, polygon: the robot reached
+        # that invariant set, static_time when static equilibrium first held (s after the push start);
+        # timeout: mps episode without fall or both sets; switch_time: s after the push start that the
+        # safety filter (if any) first chose the safe policy, nan if never; overruns: control ticks the
+        # loop missed; max_incl (deg), min_height (m) after the push; cp_hold_max (s, -1: never
+        # inside); min_hip, min_knee (m), paper_fall, knee_contact, jl_pos, jl_vel: the paper's
+        # failures after the push; discarded 1: joint range, 2: fell before the push or no sample
+        # recorded, 3: over 1 % of the ticks missed
         np.savetxt(os.path.join(save_path, "observations_dataset_abs_test_episodes.csv"),
-                   np.array([[row[c] for c in EPISODE_COLUMNS] for row in episodes], dtype=float),
+                   np.array([[float(row[c]) for c in EPISODE_COLUMNS] for row in episodes], dtype=float),
                    delimiter=",", fmt="%.6g", comments="", header=",".join(EPISODE_COLUMNS))
 
         codes = np.array([row["discarded"] for row in episodes])

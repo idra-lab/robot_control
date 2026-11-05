@@ -8,10 +8,17 @@ Push episodes in Gazebo for the safety filter's value function (components/safe_
 Each episode resets the robot standing in the policy's default posture, walks it at a command drawn
 as in training, pushes it once and labels how it ends (DatasetManager, dataset_manager.py).
 
-    python3 saferl_controller_dataset.py --robot go2 --episodes 70 --seed 501 --out <folder>     # dataset
+    python3 saferl_controller_dataset.py --robot go2 --episodes 70 --seed 501 --out <folder>     # dataset (ABS)
+    python3 saferl_controller_dataset.py --robot go2 ... --method mps          # dataset (the paper's, safe policy)
     python3 saferl_controller_dataset.py --robot go2 ... --from-push-start      # test data, walking state included
     python3 saferl_controller_dataset.py --robot go2 ... --fall-check           # run to the ground: fall_rule.py
-    python3 saferl_controller_dataset.py --robot go2 ... --filter               # closed loop with the safety filter
+    python3 saferl_controller_dataset.py --robot go2 ... --filter <model.onnx>  # closed loop with the safety filter
+    python3 saferl_controller_dataset.py --robot go2 ... --record-all --episode-length 20 --sample-rate 100
+                                                                    # calibration runs: calibrate_filter.py
+
+--method abs records the walking policy from the push end to the episode end (ABS, the baseline);
+--method mps lets the walking policy run for a warm-up after the push, then hands over to the safe
+policy and records it from there to a fall or the invariant set (the paper's value function).
 
 The same --seed gives the same commands and pushes, so a run with --filter compares episode by
 episode with one without (compare_filter.py).  It runs in real time (--speed); several batches run
@@ -25,7 +32,7 @@ from base_controllers.utils.math_tools import *
 np.set_printoptions(threshold=np.inf, precision=5, linewidth=1000, suppress=True)
 from base_controllers.quadruped_controller import QuadrupedController
 from base_controllers.components.rl_velocity_controller.rl_controller import RlVelocityController
-from base_controllers.components.safe_rl.dataset_manager import DatasetManager, ROBOT_SETTINGS
+from base_controllers.components.safe_rl.dataset_manager import DatasetManager, ROBOT_SETTINGS, METHODS
 from base_controllers.utils.pidManager import PidManager
 from gazebo_msgs.srv import GetModelState
 from gazebo_msgs.srv import SetModelStateRequest, SetPhysicsPropertiesRequest
@@ -129,10 +136,37 @@ if __name__ == '__main__':
     parser.add_argument("--seed", type=int, default=None, help="default: the clock; the same seed gives the same commands and pushes")
     parser.add_argument("--out", default=None, help="folder for observations_dataset_abs_test.npy and its _episodes.csv "
                         "(default components/safe_rl/value_function/observation_datasets/<robot>)")
-    parser.add_argument("--noise", type=float, default=10.0, help="torque noise std from the push on, Nm per joint and tick")
+    parser.add_argument("--method", default="abs", choices=METHODS,
+                        help="abs: the walking policy throughout; mps: the safe policy after a warm-up (dataset_manager.py)")
+    parser.add_argument("--switch-window", type=float, nargs=2, default=None, metavar=("MIN", "MAX"),
+                        help="mps: warm-up after the push end before the safe policy takes over, s (default 0 0.5)")
+    parser.add_argument("--switch-from", choices=("push_end", "push_start"), default="push_end",
+                        help="mps: the warm-up counts from the push end (default) or start")
+    parser.add_argument("--walk-switch", type=float, default=None,
+                        help="mps: share of the episodes switching during undisturbed walking (default 0.2)")
+    parser.add_argument("--noise-model", default="ou", choices=("ou", "white", "none"),
+                        help="torque noise: ou, correlated, throughout; white, per tick from the push on (dataset_manager.py)")
+    parser.add_argument("--noise", type=float, default=None,
+                        help="ou: std as a fraction of each joint's torque limit (default 0.04); white: std, Nm (default 10)")
+    parser.add_argument("--noise-tau", type=float, default=0.05, help="ou: time constant, s")
+    parser.add_argument("--push-window", type=float, nargs=2, default=None, metavar=("MIN", "MAX"),
+                        help="the push starts in this window, s after the start (default 2 3)")
+    parser.add_argument("--kicks", type=float, nargs="+", default=None,
+                        help="kicks drawn from these, m/s, in place of the robot's kick range")
+    parser.add_argument("--backup-delay", type=float, default=None,
+                        help="abs: the safe policy takes over this long after the push start (the safe policy alone)")
     parser.add_argument("--filter", nargs="?", const="default", default=None, metavar="MODEL",
-                        help="run the safety filter (default model: models/VF_push_end_<robot>.onnx)")
-    parser.add_argument("--threshold", type=float, default=None, help="safety filter threshold (default per robot)")
+                        help="run the safety filter (default model: value_function_manager.default_model)")
+    parser.add_argument("--threshold", type=float, default=None,
+                        help="safety filter threshold (default: the model's .json, else per robot)")
+    parser.add_argument("--margin", type=float, default=None,
+                        help="safety filter margin L, V < threshold + L switches (default: the model's .json, else 0)")
+    parser.add_argument("--no-switch-back", action="store_true",
+                        help="the safety filter keeps the safe policy once it switched (the paper's simulations)")
+    parser.add_argument("--record-all", action="store_true", help="record from 1 s on, walking included")
+    parser.add_argument("--episode-length", type=float, default=None,
+                        help="every episode lasts this long unless the robot falls, capture off, s")
+    parser.add_argument("--sample-rate", type=float, default=None, help="samples per s (default the policy's, 50)")
     parser.add_argument("--from-push-start", action="store_true",
                         help="record from the push start, not its end: test data with the walking state before the push")
     parser.add_argument("--fall-check", action="store_true",
@@ -148,13 +182,33 @@ if __name__ == '__main__':
     world_name = 'rl_flat.world'
     p.state_estimation = 'ground_truth'  # 'odometry','imu', 'pronto', 'ground_truth' (only sim)
     rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=True,debug=False, policy="velocity")
-    p.dm.record_from_push_start = args.from_push_start
+    dm = p.dm
+    dm.method = args.method
+    dm.record_from_push_start = args.from_push_start
+    if args.switch_window is not None:
+        dm.switch_window = tuple(args.switch_window)
+    dm.switch_from = args.switch_from
+    if args.walk_switch is not None:
+        dm.walk_switch_share = args.walk_switch
+    dm.noise_model, dm.noise_tau = args.noise_model, args.noise_tau
+    dm.noise_level = args.noise if args.noise is not None else {"ou": 0.04, "white": 10.0, "none": 0.0}[args.noise_model]
+    dm.kicks = args.kicks
+    if args.push_window is not None:
+        dm.push_window = tuple(args.push_window)
+    dm.backup_delay = args.backup_delay
+    if args.record_all:
+        dm.record_from_time = dm.vf_from
+    if args.episode_length is not None:
+        dm.episode_length, dm.capture = args.episode_length, False
+    if args.sample_rate is not None:
+        dm.sample_every = int(round(1.0 / (args.sample_rate * p.dt)))
     if args.fall_check:
-        p.dm.INCLINATION_THRESHOLD, p.dm.FALL_HEIGHT_THRESHOLD, p.dm.capture = 85.0, 0.1, False
+        dm.INCLINATION_THRESHOLD, dm.FALL_HEIGHT_THRESHOLD, dm.capture = 85.0, 0.1, False
     if args.filter is not None:
         from base_controllers.components.safe_rl.value_function import value_function_manager as vfm
-        p.dm.value_function = vfm.ValueFunctionManager(
-            robot_name=args.robot, model_path=None if args.filter == "default" else args.filter, threshold=args.threshold)
+        dm.value_function = vfm.ValueFunctionManager(
+            robot_name=args.robot, model_path=None if args.filter == "default" else args.filter, threshold=args.threshold,
+            margin=args.margin, min_back=np.inf if args.no_switch_back else 200)
 
     try:
         # rl_flat.world, as the RL controller (rl_quadruped) runs the policy: no 1 mm contact
@@ -174,8 +228,8 @@ if __name__ == '__main__':
         # the episode (command range, push, horizon, backup policy) is set by DatasetManager's
         # attributes, e.g. p.dm.kick_range = (0.0, 3.0)
         out = args.out or f"components/safe_rl/value_function/observation_datasets/{args.robot}"
-        p.dm.run_batch_simulations(rl_controller, n_episodes=args.episodes, save_path=out, noise_std=args.noise,
-                                   seed=int(time.time()) if args.seed is None else args.seed)
+        dm.run_batch_simulations(rl_controller, n_episodes=args.episodes, save_path=out,
+                                 seed=int(time.time()) if args.seed is None else args.seed)
 
     except (ros.ROSInterruptException, ros.service.ServiceException):
         ros.signal_shutdown("killed")
