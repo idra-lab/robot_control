@@ -1,12 +1,12 @@
-################ go2, 2026-10-30
+################ go2, 2026-11-05
 
 ======== fall rule (fall_rule.py)
-240 episodes run to the ground: fell 114, recovered 126 (on the belly, upright: 0)
-recoveries: largest inclination 22.6 deg, lowest base 0.253 m
-falls: smallest largest inclination 83.8 deg
+240 episodes run to the ground: fell 109, recovered 131 (on the belly, upright: 0)
+recoveries: largest inclination 22.8 deg, lowest base 0.276 m
+falls: smallest largest inclination 49.9 deg
 the rule, 45 deg or base below 0.2 m: in the gap
 recoveries that crossed an inclination (they would be labelled falls):
-   20 deg: 1
+   20 deg: 2
    25 deg: 0
    30 deg: 0
    35 deg: 0
@@ -15,119 +15,468 @@ recoveries that crossed an inclination (they would be labelled falls):
    50 deg: 0
    60 deg: 0
 captured, then fell (capture point within 5 cm for the hold, before the robot tilted past the rule):
-  one tick: captured  97, then fell 3
-  0.1 s   : captured  78, then fell 3
-  0.2 s   : captured  65, then fell 1
-  0.3 s   : captured  56, then fell 1
-  0.5 s   : captured  51, then fell 1
+  one tick: captured  79, then fell 1
+  0.1 s   : captured  70, then fell 0
+  0.2 s   : captured  63, then fell 0
+  0.3 s   : captured  55, then fell 0
+  0.5 s   : captured  51, then fell 0
 
 Plot: components/safe_rl/report_figures/go2_fall_rule.png
 
-======== dataset (dataset_statistics.py, training and test batches)
+======== abs dataset (dataset_statistics.py, training and test batches)
 
-Samples: 37476, labelled fallen 258, success (captured or survived) 302
+Samples: 41909, labelled fallen 224, success (captured or survived; mps: at rest) 336
 Episodes: 560, discarded 0 (joint range 0, fell before the push 0, control ticks missed 0)
-  fallen 258, captured 128, survived 174
-  fallen   episodes end 0.49 s after the push (median)
-  captured episodes end 0.85 s after the push (median)
+  fallen 224, captured 125, survived 211
+  fallen   episodes end 0.46 s after the push (median)
+  captured episodes end 0.79 s after the push (median)
   survived episodes end 3.21 s after the push (median)
 
-Commands: vx -0.50..+0.50, vy -0.50..+0.50, wz -0.50..+0.50; standing 10%, only turning 9%; outside the training range +-0.5: 0
+Commands: vx -0.49..+0.50, vy -0.50..+0.50, wz -0.50..+0.50; standing 9%, only turning 8%; outside the training range +-0.5: 0
 
 Push: kick = body mass x velocity change of the push force, m/s; k50 = the kick fallen from half the time [95 %]
-  all      : k50 1.35 [1.29, 1.42], scale 0.22, 560 episodes
-  standing : k50 1.27 [1.11, 1.44], scale 0.19,  55 episodes
-  walking  : k50 1.37 [1.30, 1.44], scale 0.23, 505 episodes
-  forward           : k50 1.63 [1.52, 1.74], 150 episodes   (benchmark, standing: 1.25)
-  forward, standing : k50 1.67 [1.44, 1.85],  14 episodes   (benchmark, standing: 1.25)
-  left              : k50 1.16 [1.06, 1.25], 127 episodes   (benchmark, standing: 1.46)
-  left, standing    : k50 0.54 [0.49, 0.76],   8 episodes   (benchmark, standing: 1.46)
-  backward          : k50 1.57 [1.46, 1.69], 128 episodes   (benchmark, standing: 1.31)
-  backward, standing: k50 1.39 [1.11, 1.61],  17 episodes   (benchmark, standing: 1.31)
-  right             : k50 1.05 [0.94, 1.16], 155 episodes   (benchmark, standing: 1.54)
-  right, standing   : k50 1.12 [0.82, 1.29],  16 episodes   (benchmark, standing: 1.54)
+  all      : k50 1.42 [1.35, 1.48], scale 0.24, 560 episodes
+  standing : k50 1.25 [1.18, 1.34], scale 0.07,  53 episodes
+  walking  : k50 1.43 [1.35, 1.50], scale 0.25, 507 episodes
+  forward           : k50 1.88 [1.77, 2.00], 135 episodes   (benchmark, standing: 1.25)
+  forward, standing : k50 1.46 [1.26, 1.57],  11 episodes   (benchmark, standing: 1.25)
+  left              : k50 1.05 [0.96, 1.15], 135 episodes   (benchmark, standing: 1.46)
+  left, standing    : k50 1.14 [0.98, 1.29],  13 episodes   (benchmark, standing: 1.46)
+  backward          : k50 1.62 [1.50, 1.74], 135 episodes   (benchmark, standing: 1.31)
+  backward, standing: k50 1.33 [1.09, 1.59],  16 episodes   (benchmark, standing: 1.31)
+  right             : k50 1.09 [0.98, 1.21], 155 episodes   (benchmark, standing: 1.54)
+  right, standing   : k50 1.34 [1.20, 1.70],  13 episodes   (benchmark, standing: 1.54)
   fall rate per kick band:
-    0.0-1.0 m/s: 228 episodes, fallen 3%
-    1.0-1.5 m/s: 106 episodes, fallen 45%
-    1.5-2.0 m/s: 108 episodes, fallen 81%
-    2.0-2.5 m/s: 118 episodes, fallen 98%
+    0.0-1.0 m/s: 250 episodes, fallen 4%
+    1.0-1.5 m/s: 108 episodes, fallen 39%
+    1.5-2.0 m/s: 108 episodes, fallen 75%
+    2.0-2.5 m/s:  94 episodes, fallen 98%
 
 Joint positions, rad (min..max over the legs)
-  haa: -1.05..+1.06   limits -1.05..+1.05, samples past them by > 0.5: 0
-  hfe: -0.53..+2.96   limits -1.57..+4.54, samples past them by > 0.5: 0
+  haa: -1.05..+1.05   limits -1.05..+1.05, samples past them by > 0.5: 0
+  hfe: -1.57..+3.49   limits -1.57..+4.54, samples past them by > 0.5: 0
   kfe: -2.72..-0.83   limits -2.72..-0.84, samples past them by > 0.5: 0
-Joint velocities: max |qd| 29.8 rad/s, 99th percentile 6.4
-Projected gravity z: -1.00..-0.56 (-1 upright), 0.0% of states upside down
+Joint velocities: max |qd| 30.5 rad/s, 99th percentile 6.0
+Projected gravity z: -1.00..-0.60 (-1 upright), 0.0% of states upside down
 
-Plot: components/safe_rl/report_figures/go2_dataset.png
-      1 Discarded: joint range 0, fell before the push 0, control ticks missed 0; ticks missed in all 18
-      2 Discarded: joint range 0, fell before the push 0, control ticks missed 0; ticks missed in all 21
-      1 Discarded: joint range 0, fell before the push 0, control ticks missed 0; ticks missed in all 22
-      3 Discarded: joint range 0, fell before the push 0, control ticks missed 0; ticks missed in all 24
-      1 Discarded: joint range 0, fell before the push 0, control ticks missed 0; ticks missed in all 26
+Plot: components/safe_rl/report_figures/go2_dataset_abs.png
+Outcomes of the 560 episodes kept: fallen 224, captured 125, survived 211, static equilibrium 6, support polygon 29, timeout 0
 
-======== training (train.log)
-Transitions: 22951, labelled fallen 157, labelled success 193
-Held-out Brier score best at epoch 75: 0.0121, that model is saved
-ONNX export components/safe_rl/value_function/models/VF_push_end_go2.onnx: max |V_onnx - V_jax| 7.7e-07 on 2000 states
+======== mps dataset (dataset_statistics.py, training and test batches)
 
-======== evaluation on the test batches, the ONNX model (evaluate_value_function.py)
-140 episodes: fell 66, recovered 74
+Samples: 30902, labelled fallen 91, success (captured or survived; mps: at rest) 396
+Episodes: 560, discarded 72 (joint range 0, fell before the push 72, control ticks missed 0)
+  fallen 91, captured 396, survived 0, ended without a label 1
+  fallen   episodes end 0.52 s after the push (median)
+  captured episodes end 1.62 s after the push (median)
 
-Walking: recovered episodes' last second, V 0.985 (min -0.008, below 0.5: 0.5%, 0.8: 1.6%, 0.9: 3.1%)
-  the state before the push acts (datasets recorded from the push start), V 0.998 (min 0.973)
+Commands: vx -0.49..+0.49, vy -0.50..+0.50, wz -0.50..+0.50; standing 10%, only turning 11%; outside the training range +-0.5: 0
+
+Push: kick = body mass x velocity change of the push force, m/s; k50 = the kick fallen from half the time [95 %]
+  all      : k50 1.75 [1.66, 1.86], scale 0.30, 488 episodes
+  standing : k50 1.78 [1.58, 2.01], scale 0.17,  51 episodes
+  walking  : k50 1.75 [1.64, 1.87], scale 0.32, 437 episodes
+  forward           : k50 1.83 [1.69, 1.96], 149 episodes   (benchmark, standing: 1.25)
+  forward, standing : k50 1.73 [1.31, 2.04],  15 episodes   (benchmark, standing: 1.25)
+  left              : k50 1.41 [1.22, 1.64], 101 episodes   (benchmark, standing: 1.46)
+  left, standing    : k50 nan [nan, nan],   5 episodes   (benchmark, standing: 1.46)
+  backward          : k50 2.20 [2.03, 2.49], 128 episodes   (benchmark, standing: 1.31)
+  backward, standing: k50 nan [nan, nan],   9 episodes   (benchmark, standing: 1.31)
+  right             : k50 1.42 [1.24, 1.62], 110 episodes   (benchmark, standing: 1.54)
+  right, standing   : k50 1.54 [1.41, 1.70],  22 episodes   (benchmark, standing: 1.54)
+  fall rate per kick band:
+    0.0-1.0 m/s: 294 episodes, fallen 1%
+    1.0-1.5 m/s:  80 episodes, fallen 22%
+    1.5-2.0 m/s:  66 episodes, fallen 48%
+    2.0-2.5 m/s:  48 episodes, fallen 79%
+
+Joint positions, rad (min..max over the legs)
+  haa: -1.05..+1.05   limits -1.05..+1.05, samples past them by > 0.5: 0
+  hfe: -0.30..+1.79   limits -1.57..+4.54, samples past them by > 0.5: 0
+  kfe: -2.73..-0.83   limits -2.72..-0.84, samples past them by > 0.5: 0
+Joint velocities: max |qd| 26.1 rad/s, 99th percentile 5.0
+Projected gravity z: -1.00..-0.60 (-1 upright), 0.0% of states upside down
+
+Plot: components/safe_rl/report_figures/go2_dataset_mps.png
+Outcomes of the 488 episodes kept: fallen 91, captured 0, survived 0, static equilibrium 396, support polygon 397, timeout 1
+  safe policy: static equilibrium 1.30 s after the switch (median, 90th percentile 2.65 s); switched while walking undisturbed 118
+
+======== model absfull: training (train_absfull.log)
+Transitions: 26283, labelled fallen 121, labelled success 229
+Held-out Brier score best at epoch 375: 0.0056, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models/VF_absfull_go2.onnx: max |V_onnx - V_jax| 6.6e-07 on 2000 states
+-------- calibration (calibrate_filter.py)
+Threshold data: 120487 states of the walking policy, 59% undisturbed walking; V median 0.997; walking V lowest 0.9639, 0.1st percentile 0.9894, 1st 0.9929
+  percentile rule: 1th percentile of V 0.0056; other percentiles: 0.5th -0.0017, 2th 0.9898
+Margin, Eq. (5): 90777 pairs 0.01 s apart, 5 % of the largest steps then of the largest ratios left out: L_V 0.0008, L_f 2.298, L 0.0019 (max |dV| over the pairs 0.9325, 99th percentile 0.0020)
+Threshold, rule walking: 0.9639 (walking 0.9639, percentile 0.0056, risk 0.9000); margin used 0.0000
+  walking undisturbed, V below the threshold (0.9639): 0.00% of 71574 states; all states 1.52%
+  walking undisturbed, V below the threshold + L (0.9639): 0.00% of 71574 states; all states 1.52%
+Written components/safe_rl/value_function/models/VF_absfull_go2.json
+-------- evaluation on the test batches (evaluate_value_function.py)
+140 episodes: fell 69, recovered 71
+
+Walking: recovered episodes' last second, V 0.996 (min 0.263, below 0.5: 0.0%, 0.8: 0.0%, 0.9: 0.0%)
+  the state before the push acts (datasets recorded from the push start), V 0.996 (min 0.990)
+Brier score, V against the outcome of its episode: 0.0563 over 10633 states
 
 Separation, ROC AUC of V (fell vs recovered) on the episodes still running:
-  0.1 s after the push: AUC 0.847, 140 episodes
-  0.2 s after the push: AUC 0.984, 140 episodes
-  0.3 s after the push: AUC 0.993, 137 episodes
-  0.5 s after the push: AUC 0.995, 106 episodes
+  0.1 s after the push: AUC 0.741, 140 episodes
+  0.2 s after the push: AUC 0.927, 140 episodes
+  0.3 s after the push: AUC 0.968, 138 episodes
+  0.5 s after the push: AUC 0.952, 100 episodes
+  0.0 s after the first sample: AUC 0.471, 140 episodes
+  0.1 s after the first sample: AUC 0.741, 140 episodes
+  0.2 s after the first sample: AUC 0.927, 140 episodes
+  0.5 s after the first sample: AUC 0.950, 98 episodes
 
 As a filter, V below the threshold (false alarm: in a recovered episode, after a kick below 0.75 m/s or any):
-  0.5: falls warned 66/66 before the fall by median 0.32 s (10th percentile 0.22 s); false alarms 4/32 light kicks, 10/74 any
-  0.8: falls warned 66/66 before the fall by median 0.34 s (10th percentile 0.22 s); false alarms 7/32 light kicks, 23/74 any
-  0.9: falls warned 66/66 before the fall by median 0.36 s (10th percentile 0.23 s); false alarms 8/32 light kicks, 37/74 any
+  0.5: falls warned 69/69 before the fall by median 0.32 s (10th percentile 0.22 s); false alarms 0/40 light kicks, 8/71 any
+  0.8: falls warned 69/69 before the fall by median 0.32 s (10th percentile 0.22 s); false alarms 0/40 light kicks, 8/71 any
+  0.9: falls warned 69/69 before the fall by median 0.32 s (10th percentile 0.22 s); false alarms 0/40 light kicks, 10/71 any
 
 Calibration, V 0.3 s after the push against the episodes that recovered:
-  V 0.0-0.2:  59 episodes, mean V 0.02, recovered 2%
-  V 0.2-0.4:   2 episodes, mean V 0.32, recovered 50%
-  V 0.4-0.6:   5 episodes, mean V 0.51, recovered 60%
-  V 0.6-0.8:   4 episodes, mean V 0.70, recovered 100%
-  V 0.8-0.9:   4 episodes, mean V 0.87, recovered 75%
-  V 0.9-1.0:  63 episodes, mean V 0.98, recovered 98%
+  V 0.0-0.2:  63 episodes, mean V 0.00, recovered 3%
+  V 0.6-0.8:   2 episodes, mean V 0.65, recovered 50%
+  V 0.9-1.0:  73 episodes, mean V 0.99, recovered 93%
 
-Plot: components/safe_rl/report_figures/go2_value_function.png
 
-======== closed loop, threshold 0.5 (compare_filter.py)
-105 episodes
-  fell: alone 47 (45%), filtered 21 (20%)
-  falls prevented 27, caused 1
-  switches to the safe policy: 60; needless (recovered alone) 13/58, of them after a kick below 0.75 m/s 1/30; before the push 0
-  switch after the push start: median 0.17 s (10-90 % 0.11-0.26 s)
-  falls left: 21, 21 after a switch 0.18-0.37 s before the fall; kicks [1.62 1.64 1.74 1.82 1.92 1.98 2.   2.1  2.11 2.17 2.22 2.24 2.28 2.32
- 2.34 2.36 2.37 2.37 2.39 2.39 2.49]; by direction forward 4, left 10, backward 0, right 7
-  falls caused: 1.82 m/s forward
-  needless switches by direction: forward 7, left 1, backward 4, right 1
-  fall rate per kick band, alone -> filtered:
-    0.0-1.0 m/s ( 39):   3% ->   0%
-    1.0-1.5 m/s ( 19):  32% ->   0%
-    1.5-2.0 m/s ( 20):  65% ->  35%
-    2.0-2.5 m/s ( 27): 100% ->  52%
+======== model abs: training (train_abs.log)
+Transitions: 26283, labelled fallen 121, labelled success 311
+Held-out Brier score best at epoch 75: 0.0122, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models/VF_abs_go2.onnx: max |V_onnx - V_jax| 4.8e-07 on 2000 states
+-------- calibration (calibrate_filter.py)
+Threshold data: 120487 states of the walking policy, 59% undisturbed walking; V median 0.990; walking V lowest 0.9444, 0.1st percentile 0.9624, 1st 0.9711
+  percentile rule: 1th percentile of V 0.9306; other percentiles: 0.5th 0.0634, 2th 0.9658
+Margin, Eq. (5): 90777 pairs 0.01 s apart, 5 % of the largest steps then of the largest ratios left out: L_V 0.0057, L_f 2.298, L 0.0131 (max |dV| over the pairs 0.7135, 99th percentile 0.0098)
+Threshold, rule walking: 0.9444 (walking 0.9444, percentile 0.9306, risk 0.9000); margin used 0.0000
+  walking undisturbed, V below the threshold (0.9444): 0.00% of 71574 states; all states 1.14%
+  walking undisturbed, V below the threshold + L (0.9444): 0.00% of 71574 states; all states 1.14%
+Written components/safe_rl/value_function/models/VF_abs_go2.json
+-------- evaluation on the test batches (evaluate_value_function.py)
+140 episodes: fell 69, recovered 71
 
-Plot: components/safe_rl/report_figures/go2_closed_loop.png
+Walking: recovered episodes' last second, V 0.989 (min 0.859, below 0.5: 0.0%, 0.8: 0.0%, 0.9: 0.0%)
+  the state before the push acts (datasets recorded from the push start), V 0.989 (min 0.960)
+Brier score, V against the outcome of its episode: 0.0881 over 10633 states
 
-======== closed loop, threshold 0.8 (compare_filter.py)
-105 episodes
-  fell: alone 47 (45%), filtered 21 (20%)
-  falls prevented 29, caused 3
-  switches to the safe policy: 71; needless (recovered alone) 24/58, of them after a kick below 0.75 m/s 4/30; before the push 0
-  switch after the push start: median 0.16 s (10-90 % 0.10-0.25 s)
-  falls left: 21, 21 after a switch 0.20-0.55 s before the fall; kicks [1.44 1.59 1.64 1.82 1.92 1.95 2.   2.1  2.11 2.17 2.22 2.24 2.28 2.31
- 2.32 2.34 2.36 2.37 2.37 2.39 2.49]; by direction forward 7, left 9, backward 0, right 5
-  falls caused: 1.82 m/s forward, 1.59 m/s forward, 1.44 m/s forward
-  needless switches by direction: forward 14, left 1, backward 4, right 5
-  fall rate per kick band, alone -> filtered:
-    0.0-1.0 m/s ( 39):   3% ->   0%
-    1.0-1.5 m/s ( 19):  32% ->   5%
-    1.5-2.0 m/s ( 20):  65% ->  30%
-    2.0-2.5 m/s ( 27): 100% ->  52%
+Separation, ROC AUC of V (fell vs recovered) on the episodes still running:
+  0.1 s after the push: AUC 0.778, 140 episodes
+  0.2 s after the push: AUC 0.945, 140 episodes
+  0.3 s after the push: AUC 0.935, 138 episodes
+  0.5 s after the push: AUC 0.901, 100 episodes
+  0.0 s after the first sample: AUC 0.462, 140 episodes
+  0.1 s after the first sample: AUC 0.778, 140 episodes
+  0.2 s after the first sample: AUC 0.945, 140 episodes
+  0.5 s after the first sample: AUC 0.894, 98 episodes
+
+As a filter, V below the threshold (false alarm: in a recovered episode, after a kick below 0.75 m/s or any):
+  0.5: falls warned 69/69 before the fall by median 0.20 s (10th percentile 0.14 s); false alarms 0/40 light kicks, 0/71 any
+  0.8: falls warned 69/69 before the fall by median 0.22 s (10th percentile 0.16 s); false alarms 0/40 light kicks, 0/71 any
+  0.9: falls warned 69/69 before the fall by median 0.26 s (10th percentile 0.18 s); false alarms 0/40 light kicks, 4/71 any
+
+Calibration, V 0.3 s after the push against the episodes that recovered:
+  V 0.0-0.2:  39 episodes, mean V 0.01, recovered 0%
+  V 0.2-0.4:   3 episodes, mean V 0.35, recovered 0%
+  V 0.4-0.6:   2 episodes, mean V 0.55, recovered 0%
+  V 0.6-0.8:   3 episodes, mean V 0.66, recovered 0%
+  V 0.8-0.9:   5 episodes, mean V 0.85, recovered 0%
+  V 0.9-1.0:  86 episodes, mean V 0.98, recovered 83%
+
+
+======== model mps_early: training (train_mps_early.log)
+1 of 64 episodes left out: they ended in neither a fall nor the invariant set
+Transitions: 20650, labelled fallen 53, labelled success 265
+Held-out Brier score best at epoch 250: 0.0042, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models/VF_mps_early_go2.onnx: max |V_onnx - V_jax| 6.0e-07 on 2000 states
+-------- calibration (calibrate_filter.py)
+Threshold data: 120487 states of the walking policy, 59% undisturbed walking; V median 0.998; walking V lowest 0.0335, 0.1st percentile 0.3364, 1st 0.7613
+  percentile rule: 1th percentile of V 0.3961; other percentiles: 0.5th 0.0649, 2th 0.7336
+Margin, Eq. (5): 90777 pairs 0.01 s apart, 5 % of the largest steps then of the largest ratios left out: L_V 0.0318, L_f 3.543, L 0.1127 (max |dV| over the pairs 0.8773, 99th percentile 0.1864)
+Threshold, rule walking: -0.0791 (walking -0.0791, percentile 0.3961, risk 0.9000); margin used 0.1127
+  walking undisturbed, V below the threshold (-0.0791): 0.00% of 71574 states; all states 0.00%
+  walking undisturbed, V below the threshold + L (0.0335): 0.00% of 71574 states; all states 0.42%
+Written components/safe_rl/value_function/models/VF_mps_early_go2.json
+-------- evaluation on the test batches (evaluate_value_function.py)
+126 episodes: fell 23, recovered 103
+
+Walking: recovered episodes' last second, V 0.998 (min 0.178, below 0.5: 0.1%, 0.8: 0.1%, 0.9: 0.2%)
+  the state before the push acts (datasets recorded from the push start), V 0.989 (min 0.726)
+Brier score, V against the outcome of its episode: 0.0044 over 7843 states
+
+Separation, ROC AUC of V (fell vs recovered) on the episodes still running:
+  0.1 s after the push: AUC 0.935, 126 episodes
+  0.2 s after the push: AUC 0.936, 126 episodes
+  0.3 s after the push: AUC 0.979, 125 episodes
+  0.5 s after the push: AUC 0.972, 110 episodes
+  0.0 s after the first sample: AUC 0.925, 122 episodes
+  0.1 s after the first sample: AUC 0.995, 114 episodes
+  0.2 s after the first sample: AUC 1.000, 106 episodes
+  0.5 s after the first sample: AUC 1.000, 97 episodes
+
+As a filter, V below the threshold (false alarm: in a recovered episode, after a kick below 0.75 m/s or any):
+  0.5: falls warned 19/23 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 0/64 light kicks, 7/103 any
+  0.8: falls warned 19/23 before the fall by median 0.14 s (10th percentile 0.04 s); false alarms 1/64 light kicks, 10/103 any
+  0.9: falls warned 19/23 before the fall by median 0.14 s (10th percentile 0.04 s); false alarms 2/64 light kicks, 13/103 any
+
+Calibration, V 0.3 s after the push against the episodes that recovered:
+  V 0.0-0.2:  20 episodes, mean V 0.02, recovered 10%
+  V 0.2-0.4:   3 episodes, mean V 0.31, recovered 67%
+  V 0.4-0.6:   1 episodes, mean V 0.52, recovered 0%
+  V 0.6-0.8:   4 episodes, mean V 0.71, recovered 50%
+  V 0.8-0.9:   3 episodes, mean V 0.87, recovered 100%
+  V 0.9-1.0:  94 episodes, mean V 1.00, recovered 99%
+
+
+======== model mps: training (train_mps.log)
+Transitions: 19519, labelled fallen 55, labelled success 249
+Held-out Brier score best at epoch 450: 0.0030, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models/VF_mps_go2.onnx: max |V_onnx - V_jax| 4.8e-07 on 2000 states
+-------- calibration (calibrate_filter.py)
+Threshold data: 120487 states of the walking policy, 59% undisturbed walking; V median 0.999; walking V lowest 0.4428, 0.1st percentile 0.9828, 1st 0.9941
+  percentile rule: 1th percentile of V 0.9087; other percentiles: 0.5th 0.0142, 2th 0.9933
+Margin, Eq. (5): 90777 pairs 0.01 s apart, 5 % of the largest steps then of the largest ratios left out: L_V 0.0011, L_f 3.906, L 0.0043 (max |dV| over the pairs 0.6920, 99th percentile 0.0046)
+Threshold, rule walking: 0.4386 (walking 0.4386, percentile 0.9087, risk 0.9000); margin used 0.0043
+  walking undisturbed, V below the threshold (0.4386): 0.00% of 71574 states; all states 0.75%
+  walking undisturbed, V below the threshold + L (0.4428): 0.00% of 71574 states; all states 0.75%
+Written components/safe_rl/value_function/models/VF_mps_go2.json
+-------- evaluation on the test batches (evaluate_value_function.py)
+126 episodes: fell 23, recovered 103
+
+Walking: recovered episodes' last second, V 0.999 (min 0.972, below 0.5: 0.0%, 0.8: 0.0%, 0.9: 0.0%)
+  the state before the push acts (datasets recorded from the push start), V 1.000 (min 0.995)
+Brier score, V against the outcome of its episode: 0.0024 over 7843 states
+
+Separation, ROC AUC of V (fell vs recovered) on the episodes still running:
+  0.1 s after the push: AUC 0.989, 126 episodes
+  0.2 s after the push: AUC 0.989, 126 episodes
+  0.3 s after the push: AUC 0.988, 125 episodes
+  0.5 s after the push: AUC 0.992, 110 episodes
+  0.0 s after the first sample: AUC 0.988, 122 episodes
+  0.1 s after the first sample: AUC 0.999, 114 episodes
+  0.2 s after the first sample: AUC 1.000, 106 episodes
+  0.5 s after the first sample: AUC 1.000, 97 episodes
+
+As a filter, V below the threshold (false alarm: in a recovered episode, after a kick below 0.75 m/s or any):
+  0.5: falls warned 19/23 before the fall by median 0.14 s (10th percentile 0.04 s); false alarms 0/64 light kicks, 4/103 any
+  0.8: falls warned 19/23 before the fall by median 0.14 s (10th percentile 0.04 s); false alarms 0/64 light kicks, 5/103 any
+  0.9: falls warned 19/23 before the fall by median 0.14 s (10th percentile 0.04 s); false alarms 0/64 light kicks, 5/103 any
+
+Calibration, V 0.3 s after the push against the episodes that recovered:
+  V 0.0-0.2:  23 episodes, mean V 0.03, recovered 9%
+  V 0.2-0.4:   2 episodes, mean V 0.34, recovered 50%
+  V 0.8-0.9:   1 episodes, mean V 0.84, recovered 0%
+  V 0.9-1.0:  99 episodes, mean V 1.00, recovered 100%
+
+
+======== closed loop: main (compare_filter.py)
+239 episodes in every arm (1 left out); reference alone, which recovered from 124
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | fell | paper fall | knees | joint limits | total | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 48.1 | 15.1 | 7.5 | 36.8 | 43.5 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| safe | 12.6 | 3.3 | 18.8 | 19.2 | 30.1 | 100.0 | 0.0 | 100.0 | 85.4 | 96 | 11 | - |
+| abs | 10.0 | 1.3 | 8.8 | 18.4 | 22.6 | 68.2 | 0.0 | 41.9 | 83.4 | 95 | 4 | 0.22 |
+| absfull | 8.4 | 4.2 | 7.5 | 15.1 | 18.8 | 66.5 | 0.0 | 38.7 | 87.4 | 97 | 2 | 0.17 |
+| mps | 26.8 | 7.1 | 13.4 | 28.0 | 30.1 | 52.3 | 0.0 | 14.5 | 47.2 | 55 | 4 | 0.30 |
+| mps_early | 33.5 | 10.9 | 14.2 | 28.5 | 30.1 | 46.0 | 0.4 | 7.3 | 28.2 | 42 | 7 | 0.34 |
+
+Episode by episode against abs (falls): fell only with the arm / only with abs, exact McNemar p
+  alone                     95 /   4, p 1.24e-23
+  safe                      21 /  15, p 0.405
+  absfull                   12 /  16, p 0.572
+  mps                       48 /   8, p 4.69e-08
+  mps_early                 62 /   6, p 8.18e-13
+
+fall rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (47)
+  alone                     33%   39%   33%   59%   81%
+  safe                       2%    0%    5%   18%   43%
+  abs                        6%    2%    7%    8%   30%
+  absfull                    6%    3%    5%    5%   23%
+  mps                       15%   12%   19%   44%   51%
+  mps_early                 23%   29%   24%   38%   55%
+
+Plot: components/safe_rl/report_figures/go2_loop_main.png
+
+======== closed loop: rule (compare_filter.py)
+239 episodes in every arm (1 left out); reference alone, which recovered from 124
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | fell | paper fall | knees | joint limits | total | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 48.1 | 15.1 | 7.5 | 36.8 | 43.5 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| abs | 10.0 | 1.3 | 8.8 | 18.4 | 22.6 | 68.2 | 0.0 | 41.9 | 83.4 | 95 | 4 | 0.22 |
+| abs_pct | 14.6 | 5.9 | 12.6 | 21.3 | 25.1 | 62.3 | 0.0 | 33.1 | 75.2 | 84 | 4 | 0.24 |
+| absfull | 8.4 | 4.2 | 7.5 | 15.1 | 18.8 | 66.5 | 0.0 | 38.7 | 87.4 | 97 | 2 | 0.17 |
+| absfull_pct | 11.7 | 1.7 | 8.8 | 22.6 | 25.9 | 52.7 | 0.0 | 14.5 | 77.8 | 88 | 1 | 0.21 |
+| mps | 26.8 | 7.1 | 13.4 | 28.0 | 30.1 | 52.3 | 0.0 | 14.5 | 47.2 | 55 | 4 | 0.30 |
+| mps_pct | 20.1 | 9.6 | 14.2 | 23.4 | 28.5 | 59.8 | 1.3 | 27.4 | 64.3 | 73 | 6 | 0.25 |
+| mps_early | 33.5 | 10.9 | 14.2 | 28.5 | 30.1 | 46.0 | 0.4 | 7.3 | 28.2 | 42 | 7 | 0.34 |
+| mps_early_pct | 21.8 | 5.9 | 13.0 | 25.9 | 29.3 | 77.4 | 19.7 | 58.9 | 70.8 | 75 | 12 | 0.15 |
+
+Episode by episode against mps (falls): fell only with the arm / only with mps, exact McNemar p
+  alone                     55 /   4, p 1.7e-12
+  abs                        8 /  48, p 4.69e-08
+  abs_pct                   11 /  40, p 5.7e-05
+  absfull                    7 /  51, p 2.4e-09
+  absfull_pct               11 /  47, p 2.03e-06
+  mps_pct                   13 /  29, p 0.0195
+  mps_early                 37 /  21, p 0.0479
+  mps_early_pct             25 /  37, p 0.162
+
+fall rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (47)
+  alone                     33%   39%   33%   59%   81%
+  abs                        6%    2%    7%    8%   30%
+  abs_pct                    2%    5%   12%   21%   38%
+  absfull                    6%    3%    5%    5%   23%
+  absfull_pct                8%    7%    5%    8%   32%
+  mps                       15%   12%   19%   44%   51%
+  mps_pct                    6%    8%   14%   33%   45%
+  mps_early                 23%   29%   24%   38%   55%
+  mps_early_pct             12%   12%   17%   33%   40%
+
+Plot: components/safe_rl/report_figures/go2_loop_rule.png
+
+======== closed loop: margin (compare_filter.py)
+240 episodes in every arm (0 left out); reference alone, which recovered from 124
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | fell | paper fall | knees | joint limits | total | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 48.3 | 15.4 | 7.9 | 37.1 | 43.8 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| mps | 27.1 | 7.5 | 13.8 | 28.3 | 30.4 | 52.5 | 0.0 | 14.5 | 46.8 | 55 | 4 | 0.30 |
+| mps_L0 | 31.2 | 10.4 | 17.9 | 34.2 | 37.1 | 52.5 | 0.0 | 15.3 | 40.5 | 51 | 10 | 0.28 |
+| mps_pct | 20.0 | 9.6 | 14.2 | 23.3 | 28.3 | 60.0 | 1.2 | 27.4 | 64.6 | 74 | 6 | 0.25 |
+| mps_pct_L0 | 20.8 | 10.0 | 16.2 | 27.1 | 31.2 | 60.0 | 2.1 | 28.2 | 63.9 | 71 | 5 | 0.25 |
+
+Episode by episode against mps (falls): fell only with the arm / only with mps, exact McNemar p
+  alone                     55 /   4, p 1.7e-12
+  mps_L0                    26 /  16, p 0.164
+  mps_pct                   13 /  30, p 0.0137
+  mps_pct_L0                14 /  29, p 0.0315
+
+fall rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (48)
+  alone                     33%   39%   33%   59%   81%
+  mps                       15%   12%   19%   44%   52%
+  mps_L0                    19%   22%   26%   31%   60%
+  mps_pct                    6%    8%   14%   33%   44%
+  mps_pct_L0                 6%   10%   17%   33%   44%
+
+Plot: components/safe_rl/report_figures/go2_loop_margin.png
+
+======== closed loop: threshold (compare_filter.py)
+239 episodes in every arm (1 left out); reference alone, which recovered from 124
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | fell | paper fall | knees | joint limits | total | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 48.1 | 15.1 | 7.5 | 36.8 | 43.5 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| safe | 12.6 | 3.3 | 18.8 | 19.2 | 30.1 | 100.0 | 0.0 | 100.0 | 85.4 | 96 | 11 | - |
+| abs_t0.5 | 32.2 | 12.1 | 15.1 | 34.7 | 36.0 | 47.3 | 0.0 | 10.5 | 31.9 | 46 | 8 | 0.39 |
+| abs_pct | 14.6 | 5.9 | 12.6 | 21.3 | 25.1 | 62.3 | 0.0 | 33.1 | 75.2 | 84 | 4 | 0.24 |
+| abs | 10.0 | 1.3 | 8.8 | 18.4 | 22.6 | 68.2 | 0.0 | 41.9 | 83.4 | 95 | 4 | 0.22 |
+| abs_t0.99 | 9.2 | 2.9 | 17.2 | 20.1 | 29.7 | 100.0 | 99.2 | 100.0 | 89.1 | 103 | 10 | -1.39 |
+| mps_t0.5 | 30.5 | 12.1 | 20.1 | 36.0 | 37.2 | 53.1 | 0.0 | 17.7 | 42.5 | 47 | 5 | 0.30 |
+| mps_pct | 20.1 | 9.6 | 14.2 | 23.4 | 28.5 | 59.8 | 1.3 | 27.4 | 64.3 | 73 | 6 | 0.25 |
+| mps_t0.9 | 21.3 | 9.2 | 17.6 | 28.0 | 32.2 | 60.3 | 2.5 | 29.0 | 62.5 | 70 | 6 | 0.25 |
+| mps | 26.8 | 7.1 | 13.4 | 28.0 | 30.1 | 52.3 | 0.0 | 14.5 | 47.2 | 55 | 4 | 0.30 |
+| mps_t0.95 | 18.4 | 7.5 | 14.6 | 25.5 | 29.3 | 61.9 | 3.3 | 29.8 | 67.6 | 74 | 3 | 0.23 |
+| mps_early | 33.5 | 10.9 | 14.2 | 28.5 | 30.1 | 46.0 | 0.4 | 7.3 | 28.2 | 42 | 7 | 0.34 |
+| mps_early_t0.9 | 11.7 | 4.2 | 14.6 | 21.3 | 30.1 | 93.7 | 61.9 | 87.9 | 86.6 | 95 | 8 | -0.74 |
+Trade-off plot: components/safe_rl/report_figures/go2_tradeoff.png
+
+fall rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (47)
+  alone                     33%   39%   33%   59%   81%
+  safe                       2%    0%    5%   18%   43%
+  abs_t0.5                  21%   27%   26%   36%   53%
+  abs_pct                    2%    5%   12%   21%   38%
+  abs                        6%    2%    7%    8%   30%
+  abs_t0.99                  0%    3%    5%   15%   26%
+  mps_t0.5                  17%   12%   24%   49%   60%
+  mps_pct                    6%    8%   14%   33%   45%
+  mps_t0.9                  10%    7%   14%   38%   45%
+  mps                       15%   12%   19%   44%   51%
+  mps_t0.95                  6%    8%   17%   26%   40%
+  mps_early                 23%   29%   24%   38%   55%
+  mps_early_t0.9             0%    5%    5%   18%   34%
+
+Plot: components/safe_rl/report_figures/go2_loop_threshold.png
+
+======== closed loop: switch_back (compare_filter.py)
+239 episodes in every arm (1 left out); reference alone, which recovered from 124
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | fell | paper fall | knees | joint limits | total | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 48.1 | 15.1 | 7.5 | 36.8 | 43.5 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| abs | 10.0 | 1.3 | 8.8 | 18.4 | 22.6 | 68.2 | 0.0 | 41.9 | 83.4 | 95 | 4 | 0.22 |
+| abs_back | 11.3 | 2.5 | 9.6 | 15.9 | 20.1 | 71.1 | 0.0 | 46.8 | 70.6 | 95 | 7 | 0.22 |
+| abs_pct | 14.6 | 5.9 | 12.6 | 21.3 | 25.1 | 62.3 | 0.0 | 33.1 | 75.2 | 84 | 4 | 0.24 |
+| abs_pct_back | 10.9 | 2.9 | 11.7 | 20.9 | 24.7 | 62.8 | 0.0 | 32.3 | 68.0 | 92 | 3 | 0.23 |
+| mps | 26.8 | 7.1 | 13.4 | 28.0 | 30.1 | 52.3 | 0.0 | 14.5 | 47.2 | 55 | 4 | 0.30 |
+| mps_back | 29.3 | 12.6 | 15.5 | 31.0 | 33.1 | 52.3 | 0.0 | 17.7 | 36.0 | 53 | 8 | 0.30 |
+| mps_pct | 20.1 | 9.6 | 14.2 | 23.4 | 28.5 | 59.8 | 1.3 | 27.4 | 64.3 | 73 | 6 | 0.25 |
+| mps_pct_back | 20.1 | 7.1 | 14.2 | 28.0 | 31.4 | 59.4 | 2.5 | 28.2 | 53.5 | 75 | 8 | 0.24 |
+
+fall rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (47)
+  alone                     33%   39%   33%   59%   81%
+  abs                        6%    2%    7%    8%   30%
+  abs_back                   4%    2%    5%   21%   30%
+  abs_pct                    2%    5%   12%   21%   38%
+  abs_pct_back               4%    3%   10%   10%   30%
+  mps                       15%   12%   19%   44%   51%
+  mps_back                  15%   15%   24%   41%   57%
+  mps_pct                    6%    8%   14%   33%   45%
+  mps_pct_back               8%    7%   19%   36%   38%
+
+Plot: components/safe_rl/report_figures/go2_loop_switch_back.png
+
+======== closed loop: ablation (compare_filter.py)
+240 episodes in every arm (0 left out); reference alone, which recovered from 124
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | fell | paper fall | knees | joint limits | total | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 48.3 | 15.4 | 7.9 | 37.1 | 43.8 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| mps | 27.1 | 7.5 | 13.8 | 28.3 | 30.4 | 52.5 | 0.0 | 14.5 | 46.8 | 55 | 4 | 0.30 |
+| mps_early | 33.8 | 11.2 | 14.6 | 28.7 | 30.4 | 46.2 | 0.4 | 7.3 | 27.9 | 42 | 7 | 0.34 |
+
+Episode by episode against mps (falls): fell only with the arm / only with mps, exact McNemar p
+  alone                     55 /   4, p 1.7e-12
+  mps_early                 37 /  21, p 0.0479
+
+fall rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (48)
+  alone                     33%   39%   33%   59%   81%
+  mps                       15%   12%   19%   44%   52%
+  mps_early                 23%   29%   24%   38%   56%
+
+Plot: components/safe_rl/report_figures/go2_loop_ablation.png
+
+======== closed loop: ablation_pct (compare_filter.py)
+240 episodes in every arm (0 left out); reference alone, which recovered from 124
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | fell | paper fall | knees | joint limits | total | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 48.3 | 15.4 | 7.9 | 37.1 | 43.8 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| mps_pct | 20.0 | 9.6 | 14.2 | 23.3 | 28.3 | 60.0 | 1.2 | 27.4 | 64.6 | 74 | 6 | 0.25 |
+| mps_early_pct | 21.7 | 5.8 | 13.3 | 25.8 | 29.6 | 77.5 | 19.6 | 58.9 | 71.0 | 76 | 12 | 0.15 |
+
+Episode by episode against mps_pct (falls): fell only with the arm / only with mps_pct, exact McNemar p
+  alone                     74 /   6, p 5.4e-16
+  mps_early_pct             29 /  25, p 0.683
+
+fall rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (48)
+  alone                     33%   39%   33%   59%   81%
+  mps_pct                    6%    8%   14%   33%   44%
+  mps_early_pct             12%   12%   17%   33%   40%
+
+Plot: components/safe_rl/report_figures/go2_loop_ablation_pct.png
