@@ -1,26 +1,31 @@
 {
  "method": "abs",
- "threshold": 0.9863,
+ "threshold": 0.05,
  "margin": 0.0,
- "rule": "walking",
- "margin_eq5": 0.0021,
+ "min_switch": 1,
+ "rule": "abs",
  "rule_thresholds": {
-  "walking": 0.9863,
-  "percentile": 0.9755,
-  "risk": 0.9
+  "walking": 0.6754,
+  "percentile": -0.8653,
+  "risk": 0.9,
+  "abs": 0.05,
+  "walking_k1": 0.6033
  },
+ "margin_eq5": 0.0869,
+ "margin_horizon": 0.05,
+ "margin_k1": 0.0,
  "percentile": 1.0,
  "risk": 0.1,
  "thresholds": {
-  "0.5": 0.0146,
-  "2": 0.9946
+  "0.5": -0.8947,
+  "2": -0.5828
  },
- "walking_lowest": 0.9863083362579346,
+ "walking_lowest": 0.6032968163490295,
+ "walking_lowest_consecutive": 0.6753948330879211,
  "trim": 5.0,
- "lipschitz_v": 0.0012783141573891044,
- "lipschitz_f": 1.6780858039855957,
- "threshold_states": 111419,
- "margin_pairs": 91336,
- "walking_below_threshold": 0.0,
- "walking_below_threshold_margin": 0.0
+ "lipschitz_v": 0.011904112994670868,
+ "lipschitz_f": 7.301358699798584,
+ "threshold_states": 111499,
+ "margin_pairs": 90376,
+ "walking_windows_below": 0.0
 }

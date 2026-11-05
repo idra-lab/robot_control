@@ -5,14 +5,14 @@ import numpy as np
 import onnxruntime as ort
 
 # The model per robot: models/VF_<name>_<robot>.onnx, exported by export_onnx.py, and next to it
-# VF_<name>_<robot>.json with the threshold (the walking rule) and the margin calibrate_filter.py
-# computed for it.  The default is the one that fell least in the closed loop of 2026-11-05
-# (value_function_comparison.md): on the Aliengo mps, the paper's value function (the safe policy's
-# chance of bringing the robot to rest), 5.2 % falls against 39 % without the filter; on the Go2
-# absfull, the walking policy's (ABS without its horizon), 8.4 % against 48 %: the Go2's safe policy
-# fails from some walking states, so the paper's value function has to switch too late there.
+# VF_<name>_<robot>.json with the threshold, margin and switching count calibrate_filter.py computed
+# for it.  The default is the one with the fewest failures (leaving the safe set: falls, knees, joint
+# limits) in the closed loop of 2026-11-05 (value_function_comparison.md): abs, ABS's reach-avoid
+# value of the walking policy, on both robots (Aliengo 17.5 %, Go2 18.8 %, against 45 % and 47 %
+# without the filter); mps, the paper's (the safe policy's chance of reaching rest), left 23 % and
+# 31 %: the safe policies themselves often exceed the knees' velocity limit while recovering.
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
-DEFAULT_MODEL = {"aliengo": "mps", "go2": "absfull"}
+DEFAULT_MODEL = {"aliengo": "abs", "go2": "abs"}
 DEFAULT_THRESHOLD = {"aliengo": 0.5, "go2": 0.5}  # without a .json
 STATE = 30
 
