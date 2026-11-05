@@ -544,3 +544,10 @@
 /base_controllers/doretta/controllers/.DS_Store
 *pyc
 /base_controllers/climbingrobot_controller/climb_multiple_jumps/new_mode/result
+# safe_rl study outputs (run_pipeline.sh, saferl_controller_dataset.py): datasets, logs, quick trials
+/base_controllers/components/safe_rl/value_function/observation_datasets/*/
+/base_controllers/components/safe_rl/trial/
+# rosbag recordings
+/base_controllers/rl_quadruped/*.bag
+# the VS Code C/C++ index
+/base_controllers/.vscode/browse.vc.db*
