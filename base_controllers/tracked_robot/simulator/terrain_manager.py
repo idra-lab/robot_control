@@ -131,6 +131,9 @@ class TerrainManager:
         return intersection_points
 
     def project_on_mesh(self, point, direction, base_yaw = None, debug=False):
+        # returns the point on the mesh along direction from point, and the roll/pitch (ZYX euler) of a robot with heading base_yaw lying on the mesh
+        if base_yaw is None:
+            base_yaw = 0.
         # SUGGESTED BY https://github.com/matteodv99tn
         point = np.append(point, self.baseline)
         # use open3d ray casting to compute distance from point to surface
@@ -146,7 +149,10 @@ class TerrainManager:
         distance = ans['t_hit'][0].cpu().numpy()
         z_coord = distance*direction
         eval_point = point + z_coord
-        normal = ans['primitive_normals'][0].cpu().numpy()
+        normal = ans['primitive_normals'][0].cpu().numpy().astype(float)
+        # triangle normals can point downwards depending on the vertex order, make it point upwards
+        if normal[2] < 0.:
+            normal = -normal
 
         # old  way (wrong)
         # #first compute yaw to solve ambiguity, because we are reasoning in the world frame, we consider yaw the angle between the projection
@@ -190,7 +196,7 @@ class TerrainManager:
             print("normal is: ", normal)
             print("eval point is ",eval_point)
 
-        return eval_point, roll, pitch, yaw
+        return eval_point, roll, pitch
 
 
 
@@ -311,7 +317,8 @@ if __name__ == '__main__':
     #scale not uniformly
     #mesh.vertices = o3d.utility.Vector3dVector(np.asarray(mesh.vertices) * np.array([0.5, 0.5, 0.2]))
 
-    eval_point, roll, pitch, yaw = terrainManager.project_on_mesh(point=point, direction=direction, debug=True)
+    yaw = 0.
+    eval_point, roll, pitch = terrainManager.project_on_mesh(point=point, direction=direction, base_yaw=yaw, debug=True)
 
     # print(scaling_factor * np.array([1, 1, 0.5]))
     print(eval_point)
