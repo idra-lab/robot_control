@@ -1,0 +1,22 @@
+{
+  "method": "mps",
+  "obs_dim": 228,
+  "threshold": 0.9,
+  "delta": 1,
+  "delta_max": 10,
+  "held_out_loss": 0.08148905634880066,
+  "data": [
+    "components/safe_rl/v2/data_handover/go2/mps/batch1/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch10/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch2/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch3/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch4/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch5/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch6/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch7/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch8/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch9/"
+  ],
+  "threshold_walking": 0.3682584044337273,
+  "threshold_walking_rate": 0.01
+}

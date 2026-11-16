@@ -1,3 +1,4 @@
+/.vscode
 /.idea/.gitignore
 /.idea/inspectionProfiles/profiles_settings.xml
 /.idea/misc.xml
@@ -551,3 +552,9 @@
 /base_controllers/rl_quadruped/*.bag
 # the VS Code C/C++ index
 /base_controllers/.vscode/browse.vc.db*
+# safe_rl: datasets, models and figures the pipelines regenerate
+base_controllers/components/safe_rl/v2/data/
+base_controllers/components/safe_rl/v2/models/
+base_controllers/components/safe_rl/v2/report/
+base_controllers/components/safe_rl/value_function/observation_datasets/
+base_controllers/components/safe_rl/value_function/models_motor/

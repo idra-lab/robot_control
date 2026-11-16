@@ -1,0 +1,22 @@
+1000 episodes (150 held out), observation 228
+train episodes 319, safe-policy transitions 58841, of failed episodes 360
+epoch 0: held-out Brier score against the Monte Carlo outcome 0.0016
+epoch 5: held-out Brier score against the Monte Carlo outcome 0.0003
+epoch 10: held-out Brier score against the Monte Carlo outcome 0.0004
+epoch 15: held-out Brier score against the Monte Carlo outcome 0.0004
+epoch 20: held-out Brier score against the Monte Carlo outcome 0.0004
+epoch 25: held-out Brier score against the Monte Carlo outcome 0.0004
+epoch 30: held-out Brier score against the Monte Carlo outcome 0.0004
+epoch 35: held-out Brier score against the Monte Carlo outcome 0.0005
+epoch 40: held-out Brier score against the Monte Carlo outcome 0.0005
+epoch 45: held-out Brier score against the Monte Carlo outcome 0.0005
+epoch 50: held-out Brier score against the Monte Carlo outcome 0.0005
+epoch 55: held-out Brier score against the Monte Carlo outcome 0.0005
+epoch 59: held-out Brier score against the Monte Carlo outcome 0.0005
+held-out handovers: 53, 9 failed, AUC 0.992, mean V recovered 0.976, failed 0.211
+held-out handovers, reliability (V bin: n, observed recovery rate): 0.0-0.2: 5, 0.00, 0.2-0.4: 3, 0.00, 0.6-0.8: 2, 1.00, 0.8-1.0: 43, 0.98
+============= Diagnostic Run torch.onnx.export version 2.0.0+cu117 =============
+verbose: False, log level: Level.ERROR
+======================= 0 NONE 0 NOTE 0 WARNING 0 ERROR ========================
+
+saved components/safe_rl/v2/models_handover/VF_paper_mc_aliengo.onnx (threshold 0.5)

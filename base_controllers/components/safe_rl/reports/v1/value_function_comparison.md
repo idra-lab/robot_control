@@ -258,6 +258,43 @@ ticks in every arm (an Isaac Lab training shared the machine during this run).
 - The value functions were trained and calibrated without the curve; retraining them, and the safe
   policy where it needed the speed (Go2), on the corrected Gazebo is the next step.
 
+### 6.2 The whole study again with the motor curve
+
+Everything rerun with `--motor-limit`: new data, both value functions retrained and recalibrated,
+the closed loop on the same 240 pushes (`MOTOR_LIMIT=1 VFS="abs mps"`, outputs in
+`value_function/observation_datasets/motor/`, `value_function/models_motor/`, `report_figures_motor/`;
+no episode lost to missed ticks). The policies are unchanged.
+
+| % failed | Aliengo | Go2 |
+|---|---|---|
+| Walking alone | 47.5 | 46.7 |
+| Safe alone | 17.1 | 29.2 |
+| **ABS**, its rule | **12.5** | **20.0** |
+| ABS, walking rule | 11.7 | 15.0 |
+| Ours, walking rule (3 in a row) | 20.0 (p = 0.006 vs ABS) | 32.5 (p = 2e-5) |
+| Ours, 1 value | 14.6 (p = 0.5) | 27.5 (p = 0.01) |
+| Ours, percentile rule | 35.4 | 28.3 |
+| Ours, no margin | 20.4 | 31.7 |
+| Switching back after 2 s: ABS / ours | 12.1 / 18.8 | 17.5 / 33.8 |
+
+![Failures against needless switches, with the motor curve](report_figures_motor/tradeoff.png)
+
+- **ABS is ahead on both robots.** Ours on a single value comes closest, level with ABS on the
+  Aliengo (p = 0.5) but not on the Go2. Retraining with the curve did not help ours: with the
+  previous value functions and the curve, ours tied ABS on the Aliengo (section 6.1).
+- **Ours switches later**: a median 0.23–0.29 s after the push starts, against 0.19–0.21 s for ABS
+  (the push lasts 0.2 s). Nearly every failure of both comes after the switch, but with ours more of
+  them right after it (Go2: 10 % of the pushes fail within 0.15 s of the switch, ABS 3.8 %): the safe
+  policy takes over a robot already too far gone. ABS asks "will the walking policy fail?", which
+  becomes true during the push; ours asks "can the safe policy still save it?", which stays true
+  until close to the edge, and our data has no handovers during the push to sharpen V there.
+- **The Go2 threshold is set by one episode.** In 1 of the 80 calibration episodes V drops to 0.14 for
+  0.1 s while walking sideways, upright and slow; the next lowest is 0.74. The walking rule puts the
+  threshold at 0.136. Excluding that episode (threshold 0.735, a post-hoc check, not the method):
+  28.3 %, still worse than ABS (p = 0.006). The threshold is not what decides the Go2.
+- **The Go2 safe policy is the limit.** Alone it fails 29.2 % of the pushes, against 17.1 % on the
+  Aliengo; a shield that relies on it, switched later, cannot match ABS there.
+
 ## 7. What this means for the paper
 
 - With the corrected safe set the paper's own metric (Table I) favours ABS on both robots; the paper's

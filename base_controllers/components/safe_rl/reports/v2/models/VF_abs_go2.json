@@ -1,0 +1,20 @@
+{
+  "method": "abs",
+  "obs_dim": 228,
+  "threshold": 0.05,
+  "delta": 1,
+  "delta_max": 10,
+  "held_out_loss": 0.01072709634900093,
+  "data": [
+    "components/safe_rl/v2/data/go2/abs/batch1/",
+    "components/safe_rl/v2/data/go2/abs/batch10/",
+    "components/safe_rl/v2/data/go2/abs/batch2/",
+    "components/safe_rl/v2/data/go2/abs/batch3/",
+    "components/safe_rl/v2/data/go2/abs/batch4/",
+    "components/safe_rl/v2/data/go2/abs/batch5/",
+    "components/safe_rl/v2/data/go2/abs/batch6/",
+    "components/safe_rl/v2/data/go2/abs/batch7/",
+    "components/safe_rl/v2/data/go2/abs/batch8/",
+    "components/safe_rl/v2/data/go2/abs/batch9/"
+  ]
+}

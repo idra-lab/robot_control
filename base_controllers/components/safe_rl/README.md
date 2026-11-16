@@ -2,6 +2,20 @@
 
 @author: riccardobussola
 
+## Layout (2026-11-16)
+
+| Folder | What |
+|---|---|
+| `v2/` | **the current study**: Q(o, Δ) on the policy's observation, ABS and the paper's V as baselines, push-family tests. Code only; `run_v2.sh` writes `v2/data/`, `v2/models/`, `v2/report/` |
+| `reports/v2/` | its results: **`mps_study_report.md`** (the full write-up, paper vs now), `v2_report.md` (the working log), per-robot tables (`<robot>_v2.md`; `_oct` = October backup policy), figures, and the final models in `models/` |
+| `reports/v1/` | the first study (value on the full state, Oct–Nov 2026): `value_function_comparison.md`, `mps_vs_abs_diagnosis.md`, `paper_vs_implementation.md`, their figures, the motor-curve models |
+| `value_function/` | the v1 value function, still the one `saferl_controller.py` loads (`models/VF_<abs\|mps>_<robot>.onnx`) |
+| root `*.py`, `*.sh` | Gazebo data collection shared by both studies (`dataset_manager.py`, `fall_rule.py`, `run_batches.sh`, `run_in_image.sh`) and the v1 pipeline (`run_pipeline.sh`, `summarize.sh`, `compare_filter.py`, plots) |
+| `paper/` | the paper sources (local only) |
+
+Datasets, logs and intermediate models were deleted on 2026-11-16: every pipeline starts from a
+clean state and regenerates what it needs. Everything below documents the v1 pipeline.
+
 The walking policy can be pushed over. The safety filter, model predictive shielding with a learned
 value function, evaluates V(x) 100 times a second and hands the robot to the safe policy (the
 zero-command recovery policy) when V drops below a threshold plus a margin; once V has been back
@@ -20,7 +34,7 @@ Leaving the safe set is a fall (45°, base below 0.2 m, or the base or a hip bel
 the ground or a joint past its limit, the same in the data, in the training and in the
 evaluation.
 
-[value_function_comparison.md](value_function_comparison.md) has the results on the Aliengo and
+[value_function_comparison.md](reports/v1/value_function_comparison.md) has the results on the Aliengo and
 the Go2, the ablations and what was decided; `paper/` (local only) holds the paper and the proposed
 changes. The pipeline runs for the Aliengo and the Go2 (`--robot`, policies in
 `rl_quadruped/policies/<robot>_velocity*`).

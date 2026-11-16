@@ -1,0 +1,48 @@
+600 episodes (90 held out), observation 228
+train episodes 510, states 91236, failed episodes' states 1953
+epoch 0: held-out squared error against the Monte Carlo RA value 0.0537
+epoch 5: held-out squared error against the Monte Carlo RA value 0.0267
+epoch 10: held-out squared error against the Monte Carlo RA value 0.0209
+epoch 15: held-out squared error against the Monte Carlo RA value 0.0175
+epoch 20: held-out squared error against the Monte Carlo RA value 0.0155
+epoch 25: held-out squared error against the Monte Carlo RA value 0.0147
+epoch 30: held-out squared error against the Monte Carlo RA value 0.0129
+epoch 35: held-out squared error against the Monte Carlo RA value 0.0127
+epoch 40: held-out squared error against the Monte Carlo RA value 0.0117
+epoch 45: held-out squared error against the Monte Carlo RA value 0.0117
+epoch 50: held-out squared error against the Monte Carlo RA value 0.0110
+epoch 55: held-out squared error against the Monte Carlo RA value 0.0124
+epoch 60: held-out squared error against the Monte Carlo RA value 0.0107
+epoch 65: held-out squared error against the Monte Carlo RA value 0.0114
+epoch 70: held-out squared error against the Monte Carlo RA value 0.0125
+epoch 75: held-out squared error against the Monte Carlo RA value 0.0116
+epoch 80: held-out squared error against the Monte Carlo RA value 0.0118
+epoch 85: held-out squared error against the Monte Carlo RA value 0.0117
+epoch 90: held-out squared error against the Monte Carlo RA value 0.0117
+epoch 95: held-out squared error against the Monte Carlo RA value 0.0117
+epoch 100: held-out squared error against the Monte Carlo RA value 0.0117
+epoch 105: held-out squared error against the Monte Carlo RA value 0.0125
+epoch 110: held-out squared error against the Monte Carlo RA value 0.0119
+epoch 115: held-out squared error against the Monte Carlo RA value 0.0116
+epoch 120: held-out squared error against the Monte Carlo RA value 0.0115
+epoch 125: held-out squared error against the Monte Carlo RA value 0.0139
+epoch 130: held-out squared error against the Monte Carlo RA value 0.0115
+epoch 135: held-out squared error against the Monte Carlo RA value 0.0114
+epoch 140: held-out squared error against the Monte Carlo RA value 0.0122
+epoch 145: held-out squared error against the Monte Carlo RA value 0.0110
+epoch 150: held-out squared error against the Monte Carlo RA value 0.0114
+epoch 155: held-out squared error against the Monte Carlo RA value 0.0116
+epoch 160: held-out squared error against the Monte Carlo RA value 0.0111
+epoch 165: held-out squared error against the Monte Carlo RA value 0.0116
+epoch 170: held-out squared error against the Monte Carlo RA value 0.0114
+epoch 175: held-out squared error against the Monte Carlo RA value 0.0117
+epoch 180: held-out squared error against the Monte Carlo RA value 0.0114
+epoch 185: held-out squared error against the Monte Carlo RA value 0.0121
+epoch 190: held-out squared error against the Monte Carlo RA value 0.0122
+epoch 195: held-out squared error against the Monte Carlo RA value 0.0122
+epoch 199: held-out squared error against the Monte Carlo RA value 0.0119
+============= Diagnostic Run torch.onnx.export version 2.0.0+cu117 =============
+verbose: False, log level: Level.ERROR
+======================= 0 NONE 0 NOTE 0 WARNING 0 ERROR ========================
+
+saved components/safe_rl/v2/models/VF_abs_go2.onnx (threshold 0.05)

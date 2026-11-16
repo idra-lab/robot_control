@@ -1,0 +1,26 @@
+{
+  "method": "paper",
+  "obs_dim": 228,
+  "threshold": 0.5,
+  "delta": 1,
+  "delta_max": 10,
+  "held_out_loss": 0.2341195046901703,
+  "data": [
+    "components/safe_rl/v2/data_handover/aliengo/mps/batch1/",
+    "components/safe_rl/v2/data_handover/aliengo/mps/batch10/",
+    "components/safe_rl/v2/data_handover/aliengo/mps/batch2/",
+    "components/safe_rl/v2/data_handover/aliengo/mps/batch3/",
+    "components/safe_rl/v2/data_handover/aliengo/mps/batch4/",
+    "components/safe_rl/v2/data_handover/aliengo/mps/batch5/",
+    "components/safe_rl/v2/data_handover/aliengo/mps/batch6/",
+    "components/safe_rl/v2/data_handover/aliengo/mps/batch7/",
+    "components/safe_rl/v2/data_handover/aliengo/mps/batch8/",
+    "components/safe_rl/v2/data_handover/aliengo/mps/batch9/"
+  ],
+  "v_thr": 0.32325763136148455,
+  "lipschitz_L": 0.1134179990521833,
+  "L_V": 0.0071198586374521255,
+  "L_f": 15.929810523986816,
+  "threshold_paper": 0.43667563041366786,
+  "threshold_walking": 0.31632203787565233
+}

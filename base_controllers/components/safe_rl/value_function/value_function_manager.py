@@ -7,7 +7,7 @@ import onnxruntime as ort
 # The model per robot: models/VF_<name>_<robot>.onnx, exported by export_onnx.py, and next to it
 # VF_<name>_<robot>.json with the threshold, margin and switching count calibrate_filter.py computed
 # for it.  The default is the one with the fewest failures (leaving the safe set: falls, knees, joint
-# limits) in the closed loop of 2026-11-05 (value_function_comparison.md): abs, ABS's reach-avoid
+# limits) in the closed loop of 2026-11-05 (reports/v1/value_function_comparison.md): abs, ABS's reach-avoid
 # value of the walking policy, on both robots (Aliengo 17.5 %, Go2 18.8 %, against 45 % and 47 %
 # without the filter); mps, the paper's (the safe policy's chance of reaching rest), left 23 % and
 # 31 %: the safe policies themselves often exceed the knees' velocity limit while recovering.

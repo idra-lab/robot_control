@@ -1,0 +1,1255 @@
+################ go2, 2026-11-10
+
+======== fall rule (fall_rule.py)
+240 episodes run to the ground: fell 106, recovered 134 (on the belly, upright: 0)
+recoveries: largest inclination 81.3 deg, lowest base 0.198 m
+falls: smallest largest inclination 25.1 deg
+the rule, 45 deg or base below 0.2 m: NOT in the gap
+recoveries that crossed an inclination (they would be labelled falls):
+   20 deg: 1
+   25 deg: 1
+   30 deg: 1
+   35 deg: 1
+   40 deg: 1
+   45 deg: 1
+   50 deg: 1
+   60 deg: 1
+captured, then fell (capture point within 5 cm for the hold, before the robot tilted past the rule):
+  one tick: captured  84, then fell 0
+  0.1 s   : captured  73, then fell 0
+  0.2 s   : captured  67, then fell 0
+  0.3 s   : captured  61, then fell 0
+  0.5 s   : captured  54, then fell 0
+
+Plot: components/safe_rl/report_figures_motor/go2_fall_rule.png
+
+======== abs dataset (dataset_statistics.py, training and test batches)
+
+Samples: 101047, labelled fallen 223, success (captured or survived; mps: at rest) 333
+Episodes: 560, discarded 4 (joint range 0, fell before the push 0, control ticks missed 4)
+  fallen 223, captured 0, survived 333
+  fallen   episodes end 0.45 s after the push (median)
+  survived episodes end 3.21 s after the push (median)
+
+Commands: vx -0.49..+0.50, vy -0.50..+0.50, wz -0.50..+0.50; standing 10%, only turning 8%; outside the training range +-0.5: 0
+
+Push: kick = body mass x velocity change of the push force, m/s; k50 = the kick fallen from half the time [95 %]
+  all      : k50 1.41 [1.35, 1.48], scale 0.22, 556 episodes
+  standing : k50 1.25 [1.18, 1.34], scale 0.07,  53 episodes
+  walking  : k50 1.42 [1.35, 1.50], scale 0.23, 503 episodes
+  forward           : k50 1.82 [1.68, 1.96], 135 episodes   (benchmark, standing: 1.25)
+  forward, standing : k50 1.46 [1.26, 1.57],  11 episodes   (benchmark, standing: 1.25)
+  left              : k50 1.09 [1.01, 1.19], 135 episodes   (benchmark, standing: 1.46)
+  left, standing    : k50 1.14 [1.01, 1.29],  13 episodes   (benchmark, standing: 1.46)
+  backward          : k50 1.58 [1.45, 1.71], 134 episodes   (benchmark, standing: 1.31)
+  backward, standing: k50 1.33 [1.13, 1.59],  16 episodes   (benchmark, standing: 1.31)
+  right             : k50 1.16 [1.05, 1.27], 152 episodes   (benchmark, standing: 1.54)
+  right, standing   : k50 1.34 [1.18, 1.71],  13 episodes   (benchmark, standing: 1.54)
+  fall rate per kick band:
+    0.0-1.0 m/s: 249 episodes, fallen 2%
+    1.0-1.5 m/s: 106 episodes, fallen 42%
+    1.5-2.0 m/s: 107 episodes, fallen 76%
+    2.0-2.5 m/s:  94 episodes, fallen 98%
+
+Joint positions, rad (min..max over the legs)
+  haa: -1.05..+1.05   limits -1.05..+1.05, samples past them by > 0.5: 0
+  hfe: -0.56..+3.84   limits -1.57..+4.54, samples past them by > 0.5: 0
+  kfe: -2.73..-0.83   limits -2.72..-0.84, samples past them by > 0.5: 0
+Joint velocities: max |qd| 23.4 rad/s, 99th percentile 5.5
+Projected gravity z: -1.00..-0.57 (-1 upright), 0.0% of states upside down
+
+Plot: components/safe_rl/report_figures_motor/go2_dataset_abs.png
+Outcomes of the 556 episodes kept: fallen 223, captured 0, survived 333, static equilibrium 19, support polygon 34, timeout 0
+
+======== mps dataset (dataset_statistics.py, training and test batches)
+
+Samples: 71940, labelled fallen 83, success (captured or survived; mps: at rest) 377
+Episodes: 560, discarded 75 (joint range 0, fell before the push 75, control ticks missed 0)
+  fallen 83, captured 377, survived 0, ended without a label 25
+  fallen   episodes end 0.45 s after the push (median)
+  captured episodes end 3.06 s after the push (median)
+
+Commands: vx -0.50..+0.49, vy -0.50..+0.50, wz -0.50..+0.50; standing 12%, only turning 8%; outside the training range +-0.5: 0
+
+Push: kick = body mass x velocity change of the push force, m/s; k50 = the kick fallen from half the time [95 %]
+  all      : k50 1.69 [1.57, 1.80], scale 0.29, 485 episodes
+  standing : k50 1.34 [1.20, 1.47], scale 0.08,  59 episodes
+  walking  : k50 1.75 [1.62, 1.90], scale 0.32, 426 episodes
+  forward           : k50 1.84 [1.68, 2.02], 140 episodes   (benchmark, standing: 1.25)
+  forward, standing : k50 1.59 [1.23, 1.84],  15 episodes   (benchmark, standing: 1.25)
+  left              : k50 1.40 [1.15, 1.70], 110 episodes   (benchmark, standing: 1.46)
+  left, standing    : k50 1.21 [1.03, 1.55],  14 episodes   (benchmark, standing: 1.46)
+  backward          : k50 1.90 [1.67, 2.17], 118 episodes   (benchmark, standing: 1.31)
+  backward, standing: k50 1.24 [1.12, 1.73],  15 episodes   (benchmark, standing: 1.31)
+  right             : k50 1.44 [1.24, 1.70], 117 episodes   (benchmark, standing: 1.54)
+  right, standing   : k50 1.30 [1.01, 1.51],  15 episodes   (benchmark, standing: 1.54)
+  fall rate per kick band:
+    0.0-1.0 m/s: 326 episodes, fallen 1%
+    1.0-1.5 m/s:  68 episodes, fallen 24%
+    1.5-2.0 m/s:  48 episodes, fallen 67%
+    2.0-2.5 m/s:  43 episodes, fallen 74%
+
+Joint positions, rad (min..max over the legs)
+  haa: -1.05..+1.05   limits -1.05..+1.05, samples past them by > 0.5: 0
+  hfe: -0.52..+1.85   limits -1.57..+4.54, samples past them by > 0.5: 0
+  kfe: -2.68..-0.83   limits -2.72..-0.84, samples past them by > 0.5: 0
+Joint velocities: max |qd| 18.5 rad/s, 99th percentile 2.0
+Projected gravity z: -1.00..-0.58 (-1 upright), 0.0% of states upside down
+
+Plot: components/safe_rl/report_figures_motor/go2_dataset_mps.png
+Outcomes of the 485 episodes kept: fallen 83, captured 0, survived 0, static equilibrium 377, support polygon 402, timeout 25
+  safe policy: static equilibrium 2.76 s after the switch (median, 90th percentile 6.18 s); switched while walking undisturbed 163
+
+======== model abs: training (train_abs.log)
+Transitions: 65182, failing states (zeta > 0) 500, states in the target (l <= 0) 59912, episodes that failed 126
+Held-out Brier score best at epoch 550: 0.0118, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models_motor/VF_abs_go2.onnx: max |V_onnx - V_jax| 4.6e-06 on 2000 states
+-------- calibration (calibrate_filter.py)
+Margin, Eq. (5): 111675 pairs 0.05 s apart (2 more evaluations + 0.03 s to act), 5 % of the largest steps then of the largest ratios left out: L_V 0.0154, L_f 7.068, L 0.1086 (max |dV| 1.1554, 99th percentile 0.1375); used 0.0000
+Threshold data: 118305 states, 71652 of them undisturbed walking; walking: lowest value 0.4432, lowest of 3 in a row 0.5313, 0.1st percentile 0.7110
+  rules: walking 0.5313, percentile -0.2415, risk 0.9000, abs 0.0500, walking_k1 0.4432; percentiles 0.5th -0.6998, 2th 0.7738
+Threshold, rule abs: 0.0500, switching below 0.0500 for 1 evaluation(s)
+  walking undisturbed: values below the level 0.000%, 3 in a row below it 0.000% of the windows; all states 1.21%
+Written components/safe_rl/value_function/models_motor/VF_abs_go2.json
+-------- evaluation on the test batches (evaluate_value_function.py)
+140 episodes: fell 67, recovered 73
+
+Walking: recovered episodes' last second, V 0.978 (min 0.581, below 0.05: 0.0%, 0.2: 0.0%, 0.5: 0.0%)
+  the state before the push acts (datasets recorded from the push start), V 0.977 (min 0.608)
+Brier score (a probability's; for ABS's score only indicative), V against the outcome of its episode: 0.2410 over 23941 states
+
+Separation, ROC AUC of V (fell vs recovered) on the episodes still running:
+  0.1 s after the push: AUC 0.852, 140 episodes
+  0.2 s after the push: AUC 0.982, 140 episodes
+  0.3 s after the push: AUC 0.987, 135 episodes
+  0.5 s after the push: AUC 1.000, 97 episodes
+  0.0 s after the first sample: AUC 0.473, 140 episodes
+  0.1 s after the first sample: AUC 0.507, 140 episodes
+  0.2 s after the first sample: AUC 0.536, 140 episodes
+  0.5 s after the first sample: AUC 0.553, 140 episodes
+
+As a filter, V below the threshold (false alarm: in a recovered episode, after a kick below 0.75 m/s or any):
+  0.05: falls warned 67/67 before the fall by median 0.26 s (10th percentile 0.13 s); false alarms 0/40 light kicks, 4/73 any
+  0.2: falls warned 67/67 before the fall by median 0.28 s (10th percentile 0.14 s); false alarms 0/40 light kicks, 6/73 any
+  0.5: falls warned 67/67 before the fall by median 0.30 s (10th percentile 0.20 s); false alarms 0/40 light kicks, 9/73 any
+
+Calibration, V 0.3 s after the push against the episodes that recovered:
+  V 0.0-0.2:  59 episodes, mean V -0.67, recovered 3%
+  V 0.4-0.6:   4 episodes, mean V 0.54, recovered 75%
+  V 0.6-0.8:   5 episodes, mean V 0.73, recovered 80%
+  V 0.8-0.9:   3 episodes, mean V 0.86, recovered 67%
+  V 0.9-1.0:  64 episodes, mean V 0.98, recovered 97%
+
+
+======== model big_n1000_w1: training (train_big_n1000_w1.log)
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+1 of 70 episodes left out: they ended in neither a failure nor the invariant set
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+2 of 70 episodes left out: they ended in neither a failure nor the invariant set
+1 of 73 episodes left out: they ended in neither a failure nor the invariant set
+3 of 73 episodes left out: they ended in neither a failure nor the invariant set
+6 of 72 episodes left out: they ended in neither a failure nor the invariant set
+2 of 73 episodes left out: they ended in neither a failure nor the invariant set
+5 of 72 episodes left out: they ended in neither a failure nor the invariant set
+2 of 73 episodes left out: they ended in neither a failure nor the invariant set
+6 of 72 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+6 of 74 episodes left out: they ended in neither a failure nor the invariant set
+Transitions: 123202, labelled failed 196, labelled success 764
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+4 of 73 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+Held-out Brier score best at epoch 50: 0.0046, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models_motor/VF_big_n1000_w1_go2.onnx: max |V_onnx - V_jax| 8.9e-07 on 2000 states
+-------- calibration (calibrate_filter.py)
+grep: components/safe_rl/value_function/observation_datasets/motor/go2/calibrate_big_n1000_w1.log: No such file or directory
+-------- evaluation on the test batches (evaluate_value_function.py)
+grep: components/safe_rl/value_function/observation_datasets/motor/go2/evaluate_big_n1000_w1.log: No such file or directory
+
+======== model big_n1000_w50: training (train_big_n1000_w50.log)
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+1 of 70 episodes left out: they ended in neither a failure nor the invariant set
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+2 of 70 episodes left out: they ended in neither a failure nor the invariant set
+1 of 73 episodes left out: they ended in neither a failure nor the invariant set
+3 of 73 episodes left out: they ended in neither a failure nor the invariant set
+6 of 72 episodes left out: they ended in neither a failure nor the invariant set
+2 of 73 episodes left out: they ended in neither a failure nor the invariant set
+5 of 72 episodes left out: they ended in neither a failure nor the invariant set
+2 of 73 episodes left out: they ended in neither a failure nor the invariant set
+6 of 72 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+6 of 74 episodes left out: they ended in neither a failure nor the invariant set
+Transitions: 123202, labelled failed 196, labelled success 764
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+4 of 73 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+Held-out Brier score best at epoch 70: 0.0258, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models_motor/VF_big_n1000_w50_go2.onnx: max |V_onnx - V_jax| 1.3e-06 on 2000 states
+-------- calibration (calibrate_filter.py)
+grep: components/safe_rl/value_function/observation_datasets/motor/go2/calibrate_big_n1000_w50.log: No such file or directory
+-------- evaluation on the test batches (evaluate_value_function.py)
+grep: components/safe_rl/value_function/observation_datasets/motor/go2/evaluate_big_n1000_w50.log: No such file or directory
+
+======== model big_n2000_w1: training (train_big_n2000_w1.log)
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+1 of 70 episodes left out: they ended in neither a failure nor the invariant set
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+2 of 70 episodes left out: they ended in neither a failure nor the invariant set
+1 of 73 episodes left out: they ended in neither a failure nor the invariant set
+3 of 73 episodes left out: they ended in neither a failure nor the invariant set
+6 of 72 episodes left out: they ended in neither a failure nor the invariant set
+2 of 73 episodes left out: they ended in neither a failure nor the invariant set
+5 of 72 episodes left out: they ended in neither a failure nor the invariant set
+2 of 73 episodes left out: they ended in neither a failure nor the invariant set
+6 of 72 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+6 of 74 episodes left out: they ended in neither a failure nor the invariant set
+2 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+8 of 75 episodes left out: they ended in neither a failure nor the invariant set
+5 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+2 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+1 of 74 episodes left out: they ended in neither a failure nor the invariant set
+6 of 75 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+1 of 75 episodes left out: they ended in neither a failure nor the invariant set
+2 of 74 episodes left out: they ended in neither a failure nor the invariant set
+Transitions: 241234, labelled failed 399, labelled success 1488
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+4 of 73 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+Held-out Brier score best at epoch 20: 0.0043, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models_motor/VF_big_n2000_w1_go2.onnx: max |V_onnx - V_jax| 8.3e-07 on 2000 states
+-------- calibration (calibrate_filter.py)
+grep: components/safe_rl/value_function/observation_datasets/motor/go2/calibrate_big_n2000_w1.log: No such file or directory
+-------- evaluation on the test batches (evaluate_value_function.py)
+grep: components/safe_rl/value_function/observation_datasets/motor/go2/evaluate_big_n2000_w1.log: No such file or directory
+
+======== model big_n2000_w50: training (train_big_n2000_w50.log)
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+1 of 70 episodes left out: they ended in neither a failure nor the invariant set
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+2 of 70 episodes left out: they ended in neither a failure nor the invariant set
+1 of 73 episodes left out: they ended in neither a failure nor the invariant set
+3 of 73 episodes left out: they ended in neither a failure nor the invariant set
+6 of 72 episodes left out: they ended in neither a failure nor the invariant set
+2 of 73 episodes left out: they ended in neither a failure nor the invariant set
+5 of 72 episodes left out: they ended in neither a failure nor the invariant set
+2 of 73 episodes left out: they ended in neither a failure nor the invariant set
+6 of 72 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+6 of 74 episodes left out: they ended in neither a failure nor the invariant set
+2 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+8 of 75 episodes left out: they ended in neither a failure nor the invariant set
+5 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+2 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+1 of 74 episodes left out: they ended in neither a failure nor the invariant set
+6 of 75 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+1 of 75 episodes left out: they ended in neither a failure nor the invariant set
+2 of 74 episodes left out: they ended in neither a failure nor the invariant set
+Transitions: 241234, labelled failed 399, labelled success 1488
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+4 of 73 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+Held-out Brier score best at epoch 105: 0.0263, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models_motor/VF_big_n2000_w50_go2.onnx: max |V_onnx - V_jax| 2.7e-06 on 2000 states
+-------- calibration (calibrate_filter.py)
+grep: components/safe_rl/value_function/observation_datasets/motor/go2/calibrate_big_n2000_w50.log: No such file or directory
+-------- evaluation on the test batches (evaluate_value_function.py)
+grep: components/safe_rl/value_function/observation_datasets/motor/go2/evaluate_big_n2000_w50.log: No such file or directory
+
+======== model big_n350_w1: training (train_big_n350_w1.log)
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+1 of 70 episodes left out: they ended in neither a failure nor the invariant set
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+2 of 70 episodes left out: they ended in neither a failure nor the invariant set
+Transitions: 44369, labelled failed 70, labelled success 267
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+4 of 73 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+Held-out Brier score best at epoch 25: 0.0062, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models_motor/VF_big_n350_w1_go2.onnx: max |V_onnx - V_jax| 4.8e-07 on 2000 states
+-------- calibration (calibrate_filter.py)
+grep: components/safe_rl/value_function/observation_datasets/motor/go2/calibrate_big_n350_w1.log: No such file or directory
+-------- evaluation on the test batches (evaluate_value_function.py)
+grep: components/safe_rl/value_function/observation_datasets/motor/go2/evaluate_big_n350_w1.log: No such file or directory
+
+======== model big_n350_w50: training (train_big_n350_w50.log)
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+1 of 70 episodes left out: they ended in neither a failure nor the invariant set
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+2 of 70 episodes left out: they ended in neither a failure nor the invariant set
+Transitions: 44369, labelled failed 70, labelled success 267
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+4 of 73 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+Held-out Brier score best at epoch 50: 0.0309, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models_motor/VF_big_n350_w50_go2.onnx: max |V_onnx - V_jax| 6.0e-07 on 2000 states
+-------- calibration (calibrate_filter.py)
+grep: components/safe_rl/value_function/observation_datasets/motor/go2/calibrate_big_n350_w50.log: No such file or directory
+-------- evaluation on the test batches (evaluate_value_function.py)
+grep: components/safe_rl/value_function/observation_datasets/motor/go2/evaluate_big_n350_w50.log: No such file or directory
+
+======== model big_n3800_w1: training (train_big_n3800_w1.log)
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+1 of 70 episodes left out: they ended in neither a failure nor the invariant set
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+2 of 70 episodes left out: they ended in neither a failure nor the invariant set
+1 of 73 episodes left out: they ended in neither a failure nor the invariant set
+3 of 73 episodes left out: they ended in neither a failure nor the invariant set
+6 of 72 episodes left out: they ended in neither a failure nor the invariant set
+2 of 73 episodes left out: they ended in neither a failure nor the invariant set
+5 of 72 episodes left out: they ended in neither a failure nor the invariant set
+2 of 73 episodes left out: they ended in neither a failure nor the invariant set
+6 of 72 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+6 of 74 episodes left out: they ended in neither a failure nor the invariant set
+2 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+8 of 75 episodes left out: they ended in neither a failure nor the invariant set
+5 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+2 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+1 of 74 episodes left out: they ended in neither a failure nor the invariant set
+6 of 75 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+1 of 75 episodes left out: they ended in neither a failure nor the invariant set
+2 of 74 episodes left out: they ended in neither a failure nor the invariant set
+6 of 75 episodes left out: they ended in neither a failure nor the invariant set
+1 of 75 episodes left out: they ended in neither a failure nor the invariant set
+5 of 75 episodes left out: they ended in neither a failure nor the invariant set
+5 of 75 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+7 of 75 episodes left out: they ended in neither a failure nor the invariant set
+3 of 74 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+7 of 75 episodes left out: they ended in neither a failure nor the invariant set
+7 of 75 episodes left out: they ended in neither a failure nor the invariant set
+8 of 75 episodes left out: they ended in neither a failure nor the invariant set
+6 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+5 of 75 episodes left out: they ended in neither a failure nor the invariant set
+3 of 74 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+8 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+2 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+2 of 75 episodes left out: they ended in neither a failure nor the invariant set
+5 of 75 episodes left out: they ended in neither a failure nor the invariant set
+Transitions: 459127, labelled failed 776, labelled success 2799
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+4 of 73 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+Held-out Brier score best at epoch 30: 0.0043, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models_motor/VF_big_n3800_w1_go2.onnx: max |V_onnx - V_jax| 8.3e-07 on 2000 states
+-------- calibration (calibrate_filter.py)
+Margin, Eq. (5): 111675 pairs 0.05 s apart (2 more evaluations + 0.03 s to act), 5 % of the largest steps then of the largest ratios left out: L_V 0.0026, L_f 14.334, L 0.0368 (max |dV| 0.9811, 99th percentile 0.0782); used 0.0368
+Threshold data: 118305 states, 71652 of them undisturbed walking; walking: lowest value 0.5257, lowest of 3 in a row 0.6543, 0.1st percentile 0.8468
+  rules: walking 0.6175, percentile 0.4440, risk 0.9000, abs 0.0500, walking_k1 0.4952, walking_robust 0.7157, walking_robust_k1 0.5533; percentiles 0.5th 0.0627, 2th 0.8850
+  walking_robust: 80 walking episodes from 1 s, 2 of them below the level 0.7525; the 5 lowest 0.654, 0.733, 0.753, 0.781, 0.788
+  walking_robust_k1: 80 walking episodes from 1 s, 2 of them below the level 0.5838; the 5 lowest 0.526, 0.543, 0.585, 0.601, 0.619
+Threshold, rule walking: 0.6175, switching below 0.6543 for 3 evaluation(s)
+  walking undisturbed: values below the level 0.015%, 3 in a row below it 0.000% of the windows; all states 1.29%
+Written components/safe_rl/value_function/models_motor/VF_big_n3800_w1_go2.json
+-------- evaluation on the test batches (evaluate_value_function.py)
+grep: components/safe_rl/value_function/observation_datasets/motor/go2/evaluate_big_n3800_w1.log: No such file or directory
+
+======== model big_n3800_w50: training (train_big_n3800_w50.log)
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+1 of 70 episodes left out: they ended in neither a failure nor the invariant set
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+2 of 70 episodes left out: they ended in neither a failure nor the invariant set
+1 of 73 episodes left out: they ended in neither a failure nor the invariant set
+3 of 73 episodes left out: they ended in neither a failure nor the invariant set
+6 of 72 episodes left out: they ended in neither a failure nor the invariant set
+2 of 73 episodes left out: they ended in neither a failure nor the invariant set
+5 of 72 episodes left out: they ended in neither a failure nor the invariant set
+2 of 73 episodes left out: they ended in neither a failure nor the invariant set
+6 of 72 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+6 of 74 episodes left out: they ended in neither a failure nor the invariant set
+2 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+8 of 75 episodes left out: they ended in neither a failure nor the invariant set
+5 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+2 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+1 of 74 episodes left out: they ended in neither a failure nor the invariant set
+6 of 75 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+1 of 75 episodes left out: they ended in neither a failure nor the invariant set
+2 of 74 episodes left out: they ended in neither a failure nor the invariant set
+6 of 75 episodes left out: they ended in neither a failure nor the invariant set
+1 of 75 episodes left out: they ended in neither a failure nor the invariant set
+5 of 75 episodes left out: they ended in neither a failure nor the invariant set
+5 of 75 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+7 of 75 episodes left out: they ended in neither a failure nor the invariant set
+3 of 74 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+7 of 75 episodes left out: they ended in neither a failure nor the invariant set
+7 of 75 episodes left out: they ended in neither a failure nor the invariant set
+8 of 75 episodes left out: they ended in neither a failure nor the invariant set
+6 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+5 of 75 episodes left out: they ended in neither a failure nor the invariant set
+3 of 74 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+8 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+2 of 75 episodes left out: they ended in neither a failure nor the invariant set
+4 of 75 episodes left out: they ended in neither a failure nor the invariant set
+2 of 75 episodes left out: they ended in neither a failure nor the invariant set
+5 of 75 episodes left out: they ended in neither a failure nor the invariant set
+Transitions: 459127, labelled failed 776, labelled success 2799
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+4 of 73 episodes left out: they ended in neither a failure nor the invariant set
+3 of 75 episodes left out: they ended in neither a failure nor the invariant set
+Held-out Brier score best at epoch 50: 0.0250, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models_motor/VF_big_n3800_w50_go2.onnx: max |V_onnx - V_jax| 3.2e-06 on 2000 states
+-------- calibration (calibrate_filter.py)
+Margin, Eq. (5): 111675 pairs 0.05 s apart (2 more evaluations + 0.03 s to act), 5 % of the largest steps then of the largest ratios left out: L_V 0.0050, L_f 14.334, L 0.0716 (max |dV| 0.9372, 99th percentile 0.1079); used 0.0716
+Threshold data: 118305 states, 71652 of them undisturbed walking; walking: lowest value 0.3672, lowest of 3 in a row 0.5232, 0.1st percentile 0.7418
+  rules: walking 0.4516, percentile 0.3682, risk 0.9000, abs 0.0500, walking_k1 0.3050, walking_robust 0.5590, walking_robust_k1 0.3559; percentiles 0.5th 0.0475, 2th 0.8503
+  walking_robust: 80 walking episodes from 1 s, 2 of them below the level 0.6305; the 5 lowest 0.523, 0.556, 0.632, 0.679, 0.679
+  walking_robust_k1: 80 walking episodes from 1 s, 2 of them below the level 0.4180; the 5 lowest 0.367, 0.385, 0.419, 0.428, 0.443
+Threshold, rule walking: 0.4516, switching below 0.5232 for 3 evaluation(s)
+  walking undisturbed: values below the level 0.014%, 3 in a row below it 0.000% of the windows; all states 1.22%
+Written components/safe_rl/value_function/models_motor/VF_big_n3800_w50_go2.json
+-------- evaluation on the test batches (evaluate_value_function.py)
+grep: components/safe_rl/value_function/observation_datasets/motor/go2/evaluate_big_n3800_w50.log: No such file or directory
+
+======== model mps: training (train_mps.log)
+5 of 59 episodes left out: they ended in neither a failure nor the invariant set
+4 of 65 episodes left out: they ended in neither a failure nor the invariant set
+2 of 61 episodes left out: they ended in neither a failure nor the invariant set
+5 of 59 episodes left out: they ended in neither a failure nor the invariant set
+2 of 62 episodes left out: they ended in neither a failure nor the invariant set
+Transitions: 37830, labelled failed 53, labelled success 235
+5 of 55 episodes left out: they ended in neither a failure nor the invariant set
+Held-out Brier score best at epoch 600: 0.0008, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models_motor/VF_mps_go2.onnx: max |V_onnx - V_jax| 5.4e-07 on 2000 states
+-------- calibration (calibrate_filter.py)
+Margin, Eq. (5): 111675 pairs 0.05 s apart (2 more evaluations + 0.03 s to act), 5 % of the largest steps then of the largest ratios left out: L_V 0.0001, L_f 17.615, L 0.0022 (max |dV| 0.9930, 99th percentile 0.0049); used 0.0022
+Threshold data: 118305 states, 71652 of them undisturbed walking; walking: lowest value 0.1041, lowest of 3 in a row 0.1383, 0.1st percentile 0.9708
+  rules: walking 0.1360, percentile 0.6722, risk 0.9000, abs 0.0500, walking_k1 0.1023; percentiles 0.5th 0.0015, 2th 0.9992
+Threshold, rule walking: 0.1360, switching below 0.1383 for 3 evaluation(s)
+  walking undisturbed: values below the level 0.003%, 3 in a row below it 0.000% of the windows; all states 0.87%
+Written components/safe_rl/value_function/models_motor/VF_mps_go2.json
+-------- evaluation on the test batches (evaluate_value_function.py)
+124 episodes: fell 22, recovered 102
+
+Walking: recovered episodes' last second, V 1.001 (min 0.998, below 0.5: 0.0%, 0.8: 0.0%, 0.9: 0.0%)
+  the state before the push acts (datasets recorded from the push start), V 1.001 (min 1.000)
+Brier score (a probability's; for ABS's score only indicative), V against the outcome of its episode: 0.0023 over 17835 states
+
+Separation, ROC AUC of V (fell vs recovered) on the episodes still running:
+  0.1 s after the push: AUC 0.975, 124 episodes
+  0.2 s after the push: AUC 0.975, 124 episodes
+  0.3 s after the push: AUC 0.977, 123 episodes
+  0.5 s after the push: AUC 0.987, 113 episodes
+  0.0 s after the first sample: AUC 0.975, 123 episodes
+  0.1 s after the first sample: AUC 0.990, 115 episodes
+  0.2 s after the first sample: AUC 0.993, 105 episodes
+  0.5 s after the first sample: AUC nan, 102 episodes
+
+As a filter, V below the threshold (false alarm: in a recovered episode, after a kick below 0.75 m/s or any):
+  0.5: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 0/70 light kicks, 4/102 any
+  0.8: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 0/70 light kicks, 4/102 any
+  0.9: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 0/70 light kicks, 4/102 any
+
+Calibration, V 0.3 s after the push against the episodes that recovered:
+  V 0.0-0.2:  21 episodes, mean V 0.01, recovered 19%
+  V 0.4-0.6:   1 episodes, mean V 0.41, recovered 0%
+  V 0.8-0.9:   1 episodes, mean V 0.85, recovered 0%
+  V 0.9-1.0: 100 episodes, mean V 1.00, recovered 98%
+
+
+======== model mps_start: training (train_mps_start.log)
+8 of 68 episodes left out: they ended in neither a failure nor the invariant set
+5 of 68 episodes left out: they ended in neither a failure nor the invariant set
+3 of 66 episodes left out: they ended in neither a failure nor the invariant set
+1 of 66 episodes left out: they ended in neither a failure nor the invariant set
+2 of 69 episodes left out: they ended in neither a failure nor the invariant set
+Transitions: 41331, labelled failed 63, labelled success 255
+1 of 67 episodes left out: they ended in neither a failure nor the invariant set
+Held-out Brier score best at epoch 25: 0.0036, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models_motor/VF_mps_start_go2.onnx: max |V_onnx - V_jax| 4.8e-07 on 2000 states
+-------- calibration (calibrate_filter.py)
+Margin, Eq. (5): 111675 pairs 0.05 s apart (2 more evaluations + 0.03 s to act), 5 % of the largest steps then of the largest ratios left out: L_V 0.0181, L_f 15.962, L 0.2890 (max |dV| 0.7591, 99th percentile 0.2367); used 0.2890
+Threshold data: 118305 states, 71652 of them undisturbed walking; walking: lowest value 0.3382, lowest of 3 in a row 0.5030, 0.1st percentile 0.6186
+  rules: walking 0.2140, percentile 0.4448, risk 0.9000, abs 0.0500, walking_k1 0.1092; percentiles 0.5th 0.0728, 2th 0.7060
+Threshold, rule walking: 0.2140, switching below 0.5030 for 3 evaluation(s)
+  walking undisturbed: values below the level 0.015%, 3 in a row below it 0.000% of the windows; all states 1.10%
+Written components/safe_rl/value_function/models_motor/VF_mps_start_go2.json
+-------- evaluation on the test batches (evaluate_value_function.py)
+124 episodes: fell 22, recovered 102
+
+Walking: recovered episodes' last second, V 1.004 (min 0.816, below 0.5: 0.0%, 0.8: 0.0%, 0.9: 0.1%)
+  the state before the push acts (datasets recorded from the push start), V 0.935 (min 0.582)
+Brier score (a probability's; for ABS's score only indicative), V against the outcome of its episode: 0.0017 over 17835 states
+
+Separation, ROC AUC of V (fell vs recovered) on the episodes still running:
+  0.1 s after the push: AUC 0.990, 124 episodes
+  0.2 s after the push: AUC 0.990, 124 episodes
+  0.3 s after the push: AUC 0.986, 123 episodes
+  0.5 s after the push: AUC 0.997, 113 episodes
+  0.0 s after the first sample: AUC 0.989, 123 episodes
+  0.1 s after the first sample: AUC 0.999, 115 episodes
+  0.2 s after the first sample: AUC 1.000, 105 episodes
+  0.5 s after the first sample: AUC nan, 102 episodes
+
+As a filter, V below the threshold (false alarm: in a recovered episode, after a kick below 0.75 m/s or any):
+  0.5: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 0/70 light kicks, 4/102 any
+  0.8: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 5/70 light kicks, 15/102 any
+  0.9: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 29/70 light kicks, 44/102 any
+
+Calibration, V 0.3 s after the push against the episodes that recovered:
+  V 0.0-0.2:  14 episodes, mean V 0.01, recovered 7%
+  V 0.2-0.4:   4 episodes, mean V 0.27, recovered 25%
+  V 0.4-0.6:   5 episodes, mean V 0.53, recovered 40%
+  V 0.6-0.8:   6 episodes, mean V 0.72, recovered 67%
+  V 0.8-0.9:   9 episodes, mean V 0.86, recovered 100%
+  V 0.9-1.0:  85 episodes, mean V 0.98, recovered 100%
+
+
+======== model mps_start_w02_walk: training (train_mps_start_w02_walk.log)
+5 of 70 episodes left out: they ended in neither a failure nor the invariant set
+2 of 70 episodes left out: they ended in neither a failure nor the invariant set
+2 of 70 episodes left out: they ended in neither a failure nor the invariant set
+2 of 70 episodes left out: they ended in neither a failure nor the invariant set
+5 of 70 episodes left out: they ended in neither a failure nor the invariant set
+Transitions: 44327, labelled failed 62, labelled success 272
+4 of 70 episodes left out: they ended in neither a failure nor the invariant set
+Held-out Brier score best at epoch 25: 0.0075, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models_motor/VF_mps_start_w02_walk_go2.onnx: max |V_onnx - V_jax| 5.4e-07 on 2000 states
+-------- calibration (calibrate_filter.py)
+Margin, Eq. (5): 111675 pairs 0.05 s apart (2 more evaluations + 0.03 s to act), 5 % of the largest steps then of the largest ratios left out: L_V 0.0039, L_f 15.053, L 0.0585 (max |dV| 0.8392, 99th percentile 0.0520); used 0.0585
+Threshold data: 118305 states, 71652 of them undisturbed walking; walking: lowest value 0.6922, lowest of 3 in a row 0.8862, 0.1st percentile 0.9296
+  rules: walking 0.8277, percentile 0.4367, risk 0.9000, abs 0.0500, walking_k1 0.6454, walking_robust 0.8482, walking_robust_k1 0.7453; percentiles 0.5th 0.0648, 2th 0.9253
+  walking_robust: 80 walking episodes from 1 s, 2 of them below the level 0.9067; the 5 lowest 0.886, 0.887, 0.907, 0.913, 0.934
+  walking_robust_k1: 80 walking episodes from 1 s, 2 of them below the level 0.7921; the 5 lowest 0.692, 0.749, 0.793, 0.816, 0.829
+Threshold, rule walking: 0.8277, switching below 0.8862 for 3 evaluation(s)
+  walking undisturbed: values below the level 0.032%, 3 in a row below it 0.000% of the windows; all states 1.71%
+Written components/safe_rl/value_function/models_motor/VF_mps_start_w02_walk_go2.json
+-------- evaluation on the test batches (evaluate_value_function.py)
+124 episodes: fell 22, recovered 102
+
+Walking: recovered episodes' last second, V 1.004 (min 0.790, below 0.5: 0.0%, 0.8: 0.0%, 0.9: 0.0%)
+  the state before the push acts (datasets recorded from the push start), V 0.997 (min 0.816)
+Brier score (a probability's; for ABS's score only indicative), V against the outcome of its episode: 0.0017 over 17835 states
+
+Separation, ROC AUC of V (fell vs recovered) on the episodes still running:
+  0.1 s after the push: AUC 0.988, 124 episodes
+  0.2 s after the push: AUC 0.988, 124 episodes
+  0.3 s after the push: AUC 0.987, 123 episodes
+  0.5 s after the push: AUC 0.994, 113 episodes
+  0.0 s after the first sample: AUC 0.986, 123 episodes
+  0.1 s after the first sample: AUC 0.995, 115 episodes
+  0.2 s after the first sample: AUC 1.000, 105 episodes
+  0.5 s after the first sample: AUC nan, 102 episodes
+
+As a filter, V below the threshold (false alarm: in a recovered episode, after a kick below 0.75 m/s or any):
+  0.5: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 1/70 light kicks, 5/102 any
+  0.8: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 3/70 light kicks, 9/102 any
+  0.9: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 13/70 light kicks, 22/102 any
+
+Calibration, V 0.3 s after the push against the episodes that recovered:
+  V 0.0-0.2:  15 episodes, mean V -0.00, recovered 0%
+  V 0.2-0.4:   1 episodes, mean V 0.30, recovered 100%
+  V 0.4-0.6:   2 episodes, mean V 0.44, recovered 50%
+  V 0.6-0.8:   3 episodes, mean V 0.72, recovered 67%
+  V 0.8-0.9:   5 episodes, mean V 0.84, recovered 40%
+  V 0.9-1.0:  97 episodes, mean V 1.00, recovered 99%
+
+
+======== model mps_start_w03_walk: training (train_mps_start_w03_walk.log)
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+1 of 70 episodes left out: they ended in neither a failure nor the invariant set
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+1 of 69 episodes left out: they ended in neither a failure nor the invariant set
+2 of 70 episodes left out: they ended in neither a failure nor the invariant set
+Transitions: 44369, labelled failed 70, labelled success 267
+6 of 70 episodes left out: they ended in neither a failure nor the invariant set
+Held-out Brier score best at epoch 25: 0.0080, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models_motor/VF_mps_start_w03_walk_go2.onnx: max |V_onnx - V_jax| 4.8e-07 on 2000 states
+-------- calibration (calibrate_filter.py)
+Margin, Eq. (5): 111675 pairs 0.05 s apart (2 more evaluations + 0.03 s to act), 5 % of the largest steps then of the largest ratios left out: L_V 0.0043, L_f 14.381, L 0.0616 (max |dV| 0.7745, 99th percentile 0.0750); used 0.0616
+Threshold data: 118305 states, 71652 of them undisturbed walking; walking: lowest value 0.7453, lowest of 3 in a row 0.8158, 0.1st percentile 0.9029
+  rules: walking 0.7541, percentile 0.4945, risk 0.9000, abs 0.0500, walking_k1 0.6972, walking_robust 0.7985, walking_robust_k1 0.7192; percentiles 0.5th 0.0423, 2th 0.9071
+  walking_robust: 80 walking episodes from 1 s, 2 of them below the level 0.8601; the 5 lowest 0.816, 0.841, 0.861, 0.878, 0.885
+  walking_robust_k1: 80 walking episodes from 1 s, 2 of them below the level 0.7673; the 5 lowest 0.745, 0.762, 0.767, 0.818, 0.822
+Threshold, rule walking: 0.7541, switching below 0.8158 for 3 evaluation(s)
+  walking undisturbed: values below the level 0.007%, 3 in a row below it 0.000% of the windows; all states 1.54%
+Written components/safe_rl/value_function/models_motor/VF_mps_start_w03_walk_go2.json
+-------- evaluation on the test batches (evaluate_value_function.py)
+124 episodes: fell 22, recovered 102
+
+Walking: recovered episodes' last second, V 1.002 (min 0.902, below 0.5: 0.0%, 0.8: 0.0%, 0.9: 0.0%)
+  the state before the push acts (datasets recorded from the push start), V 0.995 (min 0.823)
+Brier score (a probability's; for ABS's score only indicative), V against the outcome of its episode: 0.0011 over 17835 states
+
+Separation, ROC AUC of V (fell vs recovered) on the episodes still running:
+  0.1 s after the push: AUC 0.991, 124 episodes
+  0.2 s after the push: AUC 0.991, 124 episodes
+  0.3 s after the push: AUC 0.993, 123 episodes
+  0.5 s after the push: AUC 0.998, 113 episodes
+  0.0 s after the first sample: AUC 0.990, 123 episodes
+  0.1 s after the first sample: AUC 0.998, 115 episodes
+  0.2 s after the first sample: AUC 1.000, 105 episodes
+  0.5 s after the first sample: AUC nan, 102 episodes
+
+As a filter, V below the threshold (false alarm: in a recovered episode, after a kick below 0.75 m/s or any):
+  0.5: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 0/70 light kicks, 5/102 any
+  0.8: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 4/70 light kicks, 10/102 any
+  0.9: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 8/70 light kicks, 16/102 any
+
+Calibration, V 0.3 s after the push against the episodes that recovered:
+  V 0.0-0.2:  15 episodes, mean V 0.00, recovered 0%
+  V 0.2-0.4:   3 episodes, mean V 0.30, recovered 33%
+  V 0.4-0.6:   4 episodes, mean V 0.46, recovered 50%
+  V 0.6-0.8:   2 episodes, mean V 0.62, recovered 50%
+  V 0.8-0.9:   3 episodes, mean V 0.82, recovered 67%
+  V 0.9-1.0:  96 episodes, mean V 1.00, recovered 100%
+
+
+======== model mps_start_walk2: training (train_mps_start_walk2.log)
+8 of 68 episodes left out: they ended in neither a failure nor the invariant set
+5 of 68 episodes left out: they ended in neither a failure nor the invariant set
+3 of 66 episodes left out: they ended in neither a failure nor the invariant set
+1 of 66 episodes left out: they ended in neither a failure nor the invariant set
+2 of 69 episodes left out: they ended in neither a failure nor the invariant set
+8 of 68 episodes left out: they ended in neither a failure nor the invariant set
+2 of 63 episodes left out: they ended in neither a failure nor the invariant set
+7 of 67 episodes left out: they ended in neither a failure nor the invariant set
+3 of 67 episodes left out: they ended in neither a failure nor the invariant set
+2 of 70 episodes left out: they ended in neither a failure nor the invariant set
+4 of 67 episodes left out: they ended in neither a failure nor the invariant set
+Transitions: 89603, labelled failed 137, labelled success 557
+1 of 67 episodes left out: they ended in neither a failure nor the invariant set
+Held-out Brier score best at epoch 100: 0.0027, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models_motor/VF_mps_start_walk2_go2.onnx: max |V_onnx - V_jax| 7.2e-07 on 2000 states
+-------- calibration (calibrate_filter.py)
+Margin, Eq. (5): 111675 pairs 0.05 s apart (2 more evaluations + 0.03 s to act), 5 % of the largest steps then of the largest ratios left out: L_V 0.0014, L_f 15.290, L 0.0213 (max |dV| 1.0928, 99th percentile 0.0200); used 0.0213
+Threshold data: 118305 states, 71652 of them undisturbed walking; walking: lowest value 0.4277, lowest of 3 in a row 0.7504, 0.1st percentile 0.9669
+  rules: walking 0.7291, percentile 0.4101, risk 0.9000, abs 0.0500, walking_k1 0.4104, walking_robust 0.8378, walking_robust_k1 0.6315; percentiles 0.5th 0.0303, 2th 0.9842
+  walking_robust: 80 walking episodes from 1 s, 2 of them below the level 0.8591; the 5 lowest 0.750, 0.767, 0.861, 0.865, 0.969
+  walking_robust_k1: 80 walking episodes from 1 s, 2 of them below the level 0.6488; the 5 lowest 0.428, 0.601, 0.650, 0.753, 0.772
+Threshold, rule walking: 0.7291, switching below 0.7504 for 3 evaluation(s)
+  walking undisturbed: values below the level 0.008%, 3 in a row below it 0.000% of the windows; all states 1.18%
+Written components/safe_rl/value_function/models_motor/VF_mps_start_walk2_go2.json
+-------- evaluation on the test batches (evaluate_value_function.py)
+124 episodes: fell 22, recovered 102
+
+Walking: recovered episodes' last second, V 0.997 (min 0.989, below 0.5: 0.0%, 0.8: 0.0%, 0.9: 0.0%)
+  the state before the push acts (datasets recorded from the push start), V 0.996 (min 0.988)
+Brier score (a probability's; for ABS's score only indicative), V against the outcome of its episode: 0.0005 over 17835 states
+
+Separation, ROC AUC of V (fell vs recovered) on the episodes still running:
+  0.1 s after the push: AUC 0.980, 124 episodes
+  0.2 s after the push: AUC 0.981, 124 episodes
+  0.3 s after the push: AUC 0.980, 123 episodes
+  0.5 s after the push: AUC 1.000, 113 episodes
+  0.0 s after the first sample: AUC 0.977, 123 episodes
+  0.1 s after the first sample: AUC 1.000, 115 episodes
+  0.2 s after the first sample: AUC 1.000, 105 episodes
+  0.5 s after the first sample: AUC nan, 102 episodes
+
+As a filter, V below the threshold (false alarm: in a recovered episode, after a kick below 0.75 m/s or any):
+  0.5: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 0/70 light kicks, 2/102 any
+  0.8: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 0/70 light kicks, 3/102 any
+  0.9: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 0/70 light kicks, 3/102 any
+
+Calibration, V 0.3 s after the push against the episodes that recovered:
+  V 0.0-0.2:  19 episodes, mean V 0.00, recovered 5%
+  V 0.2-0.4:   1 episodes, mean V 0.33, recovered 0%
+  V 0.6-0.8:   1 episodes, mean V 0.71, recovered 0%
+  V 0.9-1.0: 102 episodes, mean V 1.00, recovered 99%
+
+
+======== model mps_start_walk: training (train_mps_start_walk.log)
+8 of 68 episodes left out: they ended in neither a failure nor the invariant set
+5 of 68 episodes left out: they ended in neither a failure nor the invariant set
+3 of 66 episodes left out: they ended in neither a failure nor the invariant set
+1 of 66 episodes left out: they ended in neither a failure nor the invariant set
+2 of 69 episodes left out: they ended in neither a failure nor the invariant set
+Transitions: 41331, labelled failed 63, labelled success 255
+1 of 67 episodes left out: they ended in neither a failure nor the invariant set
+Held-out Brier score best at epoch 25: 0.0033, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models_motor/VF_mps_start_walk_go2.onnx: max |V_onnx - V_jax| 5.4e-07 on 2000 states
+-------- calibration (calibrate_filter.py)
+Margin, Eq. (5): 111675 pairs 0.05 s apart (2 more evaluations + 0.03 s to act), 5 % of the largest steps then of the largest ratios left out: L_V 0.0031, L_f 15.962, L 0.0495 (max |dV| 0.5609, 99th percentile 0.0390); used 0.0495
+Threshold data: 118305 states, 71652 of them undisturbed walking; walking: lowest value 0.8067, lowest of 3 in a row 0.8780, 0.1st percentile 0.9533
+  rules: walking 0.8285, percentile 0.5119, risk 0.9000, abs 0.0500, walking_k1 0.7681, walking_robust 0.8921, walking_robust_k1 0.8042; percentiles 0.5th 0.1091, 2th 0.9318
+  walking_robust: 80 walking episodes from 1 s, 2 of them below the level 0.9416; the 5 lowest 0.878, 0.889, 0.943, 0.948, 0.950
+  walking_robust_k1: 80 walking episodes from 1 s, 2 of them below the level 0.8428; the 5 lowest 0.807, 0.833, 0.843, 0.861, 0.867
+Threshold, rule walking: 0.8285, switching below 0.8780 for 3 evaluation(s)
+  walking undisturbed: values below the level 0.011%, 3 in a row below it 0.000% of the windows; all states 1.70%
+Written components/safe_rl/value_function/models_motor/VF_mps_start_walk_go2.json
+-------- evaluation on the test batches (evaluate_value_function.py)
+124 episodes: fell 22, recovered 102
+
+Walking: recovered episodes' last second, V 1.002 (min 0.940, below 0.5: 0.0%, 0.8: 0.0%, 0.9: 0.0%)
+  the state before the push acts (datasets recorded from the push start), V 1.001 (min 0.974)
+Brier score (a probability's; for ABS's score only indicative), V against the outcome of its episode: 0.0012 over 17835 states
+
+Separation, ROC AUC of V (fell vs recovered) on the episodes still running:
+  0.1 s after the push: AUC 0.992, 124 episodes
+  0.2 s after the push: AUC 0.992, 124 episodes
+  0.3 s after the push: AUC 0.989, 123 episodes
+  0.5 s after the push: AUC 0.997, 113 episodes
+  0.0 s after the first sample: AUC 0.992, 123 episodes
+  0.1 s after the first sample: AUC 0.998, 115 episodes
+  0.2 s after the first sample: AUC 1.000, 105 episodes
+  0.5 s after the first sample: AUC nan, 102 episodes
+
+As a filter, V below the threshold (false alarm: in a recovered episode, after a kick below 0.75 m/s or any):
+  0.5: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 0/70 light kicks, 3/102 any
+  0.8: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 0/70 light kicks, 6/102 any
+  0.9: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 1/70 light kicks, 7/102 any
+
+Calibration, V 0.3 s after the push against the episodes that recovered:
+  V 0.0-0.2:  14 episodes, mean V 0.05, recovered 7%
+  V 0.2-0.4:   2 episodes, mean V 0.30, recovered 0%
+  V 0.4-0.6:   5 episodes, mean V 0.53, recovered 40%
+  V 0.6-0.8:   4 episodes, mean V 0.71, recovered 75%
+  V 0.8-0.9:   2 episodes, mean V 0.82, recovered 0%
+  V 0.9-1.0:  96 episodes, mean V 1.00, recovered 100%
+
+
+======== model mps_walk: training (train_mps_walk.log)
+5 of 59 episodes left out: they ended in neither a failure nor the invariant set
+4 of 65 episodes left out: they ended in neither a failure nor the invariant set
+2 of 61 episodes left out: they ended in neither a failure nor the invariant set
+5 of 59 episodes left out: they ended in neither a failure nor the invariant set
+2 of 62 episodes left out: they ended in neither a failure nor the invariant set
+Transitions: 37830, labelled failed 53, labelled success 235
+5 of 55 episodes left out: they ended in neither a failure nor the invariant set
+Held-out Brier score best at epoch 500: 0.0007, that model is saved
+ONNX export /root/ros_ws/src/locosim/robot_control/base_controllers/components/safe_rl/value_function/models_motor/VF_mps_walk_go2.onnx: max |V_onnx - V_jax| 8.3e-07 on 2000 states
+-------- calibration (calibrate_filter.py)
+Margin, Eq. (5): 111675 pairs 0.05 s apart (2 more evaluations + 0.03 s to act), 5 % of the largest steps then of the largest ratios left out: L_V 0.0000, L_f 17.615, L 0.0007 (max |dV| 0.9988, 99th percentile 0.0005); used 0.0007
+Threshold data: 118305 states, 71652 of them undisturbed walking; walking: lowest value 0.9976, lowest of 3 in a row 0.9984, 0.1st percentile 0.9992
+  rules: walking 0.9978, percentile 0.7962, risk 0.9000, abs 0.0500, walking_k1 0.9970, walking_robust 0.9983, walking_robust_k1 0.9976; percentiles 0.5th 0.0010, 2th 0.9994
+  walking_robust: 80 walking episodes from 1 s, 2 of them below the level 0.9990; the 5 lowest 0.998, 0.999, 0.999, 0.999, 0.999
+  walking_robust_k1: 80 walking episodes from 1 s, 2 of them below the level 0.9982; the 5 lowest 0.998, 0.998, 0.998, 0.998, 0.999
+Threshold, rule walking: 0.9978, switching below 0.9984 for 3 evaluation(s)
+  walking undisturbed: values below the level 0.013%, 3 in a row below it 0.000% of the windows; all states 1.30%
+Written components/safe_rl/value_function/models_motor/VF_mps_walk_go2.json
+-------- evaluation on the test batches (evaluate_value_function.py)
+124 episodes: fell 22, recovered 102
+
+Walking: recovered episodes' last second, V 1.000 (min 0.999, below 0.5: 0.0%, 0.8: 0.0%, 0.9: 0.0%)
+  the state before the push acts (datasets recorded from the push start), V 1.000 (min 0.999)
+Brier score (a probability's; for ABS's score only indicative), V against the outcome of its episode: 0.0025 over 17835 states
+
+Separation, ROC AUC of V (fell vs recovered) on the episodes still running:
+  0.1 s after the push: AUC 0.927, 124 episodes
+  0.2 s after the push: AUC 0.927, 124 episodes
+  0.3 s after the push: AUC 0.923, 123 episodes
+  0.5 s after the push: AUC 0.904, 113 episodes
+  0.0 s after the first sample: AUC 0.925, 123 episodes
+  0.1 s after the first sample: AUC 0.992, 115 episodes
+  0.2 s after the first sample: AUC 0.696, 105 episodes
+  0.5 s after the first sample: AUC nan, 102 episodes
+
+As a filter, V below the threshold (false alarm: in a recovered episode, after a kick below 0.75 m/s or any):
+  0.5: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 0/70 light kicks, 4/102 any
+  0.8: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 0/70 light kicks, 4/102 any
+  0.9: falls warned 21/22 before the fall by median 0.12 s (10th percentile 0.04 s); false alarms 0/70 light kicks, 4/102 any
+
+Calibration, V 0.3 s after the push against the episodes that recovered:
+  V 0.0-0.2:  21 episodes, mean V 0.00, recovered 19%
+  V 0.4-0.6:   2 episodes, mean V 0.52, recovered 0%
+  V 0.9-1.0: 100 episodes, mean V 1.00, recovered 98%
+
+
+======== closed loop: main (compare_filter.py)
+240 episodes in every arm (0 left out); reference alone, which recovered from 128
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 46.7 | 34.2 | 7.9 | 8.8 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| safe | 29.2 | 9.2 | 1.2 | 19.6 | 0.0 | 0.0 | 100.0 | 0.0 | 100.0 | 52.1 | 68 | 26 | - |
+| abs | 20.0 | 8.3 | 2.5 | 10.0 | 0.0 | 0.0 | 56.7 | 0.0 | 21.9 | 44.1 | 70 | 6 | 0.21 |
+| abs_walk | 15.0 | 6.7 | 0.8 | 8.3 | 0.0 | 0.0 | 64.6 | 0.4 | 34.4 | 50.3 | 81 | 5 | 0.19 |
+| mps | 32.5 | 15.8 | 4.2 | 15.8 | 0.4 | 0.0 | 50.8 | 0.0 | 16.4 | 26.2 | 43 | 9 | 0.29 |
+
+Episode by episode against abs (failures): failed only with the arm / only with abs, exact McNemar p
+  alone                     70 /   6, p 6.31e-15
+  safe                      37 /  15, p 0.00319
+  abs_walk                   8 /  20, p 0.0357
+  mps                       39 /   9, p 1.52e-05
+
+failure rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (48)
+  alone                     21%   42%   38%   56%   79%
+  safe                      10%   15%   21%   44%   62%
+  abs                        8%   12%   12%   26%   46%
+  abs_walk                   4%    8%    7%   21%   38%
+  mps                       21%   22%   26%   36%   60%
+
+Plot: components/safe_rl/report_figures_motor/go2_loop_main.png
+
+======== closed loop: rule (compare_filter.py)
+240 episodes in every arm (0 left out); reference alone, which recovered from 128
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 46.7 | 34.2 | 7.9 | 8.8 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| abs | 20.0 | 8.3 | 2.5 | 10.0 | 0.0 | 0.0 | 56.7 | 0.0 | 21.9 | 44.1 | 70 | 6 | 0.21 |
+| abs_walk | 15.0 | 6.7 | 0.8 | 8.3 | 0.0 | 0.0 | 64.6 | 0.4 | 34.4 | 50.3 | 81 | 5 | 0.19 |
+| mps | 32.5 | 15.8 | 4.2 | 15.8 | 0.4 | 0.0 | 50.8 | 0.0 | 16.4 | 26.2 | 43 | 9 | 0.29 |
+| mps_pct | 28.3 | 14.2 | 2.5 | 13.8 | 0.0 | 0.0 | 53.3 | 0.4 | 20.3 | 29.7 | 51 | 7 | 0.26 |
+
+Episode by episode against mps (failures): failed only with the arm / only with mps, exact McNemar p
+  alone                     43 /   9, p 2.04e-06
+  abs                        9 /  39, p 1.52e-05
+  abs_walk                   6 /  48, p 3.26e-09
+  mps_pct                   11 /  21, p 0.11
+
+failure rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (48)
+  alone                     21%   42%   38%   56%   79%
+  abs                        8%   12%   12%   26%   46%
+  abs_walk                   4%    8%    7%   21%   38%
+  mps                       21%   22%   26%   36%   60%
+  mps_pct                   12%   15%   19%   41%   60%
+
+Plot: components/safe_rl/report_figures_motor/go2_loop_rule.png
+
+======== closed loop: margin (compare_filter.py)
+240 episodes in every arm (0 left out); reference alone, which recovered from 128
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 46.7 | 34.2 | 7.9 | 8.8 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| mps | 32.5 | 15.8 | 4.2 | 15.8 | 0.4 | 0.0 | 50.8 | 0.0 | 16.4 | 26.2 | 43 | 9 | 0.29 |
+| mps_L0 | 31.7 | 17.1 | 5.4 | 15.8 | 0.4 | 0.0 | 48.3 | 0.0 | 11.7 | 25.9 | 40 | 4 | 0.27 |
+
+Episode by episode against mps (failures): failed only with the arm / only with mps, exact McNemar p
+  alone                     43 /   9, p 2.04e-06
+  mps_L0                    13 /  15, p 0.851
+
+failure rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (48)
+  alone                     21%   42%   38%   56%   79%
+  mps                       21%   22%   26%   36%   60%
+  mps_L0                    13%   25%   24%   36%   62%
+
+Plot: components/safe_rl/report_figures_motor/go2_loop_margin.png
+
+======== closed loop: consecutive (compare_filter.py)
+240 episodes in every arm (0 left out); reference alone, which recovered from 128
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 46.7 | 34.2 | 7.9 | 8.8 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| mps | 32.5 | 15.8 | 4.2 | 15.8 | 0.4 | 0.0 | 50.8 | 0.0 | 16.4 | 26.2 | 43 | 9 | 0.29 |
+| mps_k1 | 27.5 | 13.3 | 4.2 | 14.6 | 0.0 | 0.0 | 52.1 | 0.0 | 15.6 | 33.6 | 50 | 4 | 0.27 |
+
+Episode by episode against mps (failures): failed only with the arm / only with mps, exact McNemar p
+  alone                     43 /   9, p 2.04e-06
+  mps_k1                    14 /  26, p 0.0807
+
+failure rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (48)
+  alone                     21%   42%   38%   56%   79%
+  mps                       21%   22%   26%   36%   60%
+  mps_k1                    12%   17%   24%   33%   56%
+
+Plot: components/safe_rl/report_figures_motor/go2_loop_consecutive.png
+
+======== closed loop: threshold (compare_filter.py)
+240 episodes in every arm (0 left out); reference alone, which recovered from 128
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 46.7 | 34.2 | 7.9 | 8.8 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| safe | 29.2 | 9.2 | 1.2 | 19.6 | 0.0 | 0.0 | 100.0 | 0.0 | 100.0 | 52.1 | 68 | 26 | - |
+| abs | 20.0 | 8.3 | 2.5 | 10.0 | 0.0 | 0.0 | 56.7 | 0.0 | 21.9 | 44.1 | 70 | 6 | 0.21 |
+| abs_walk | 15.0 | 6.7 | 0.8 | 8.3 | 0.0 | 0.0 | 64.6 | 0.4 | 34.4 | 50.3 | 81 | 5 | 0.19 |
+| mps_pct | 28.3 | 14.2 | 2.5 | 13.8 | 0.0 | 0.0 | 53.3 | 0.4 | 20.3 | 29.7 | 51 | 7 | 0.26 |
+| mps_k1 | 27.5 | 13.3 | 4.2 | 14.6 | 0.0 | 0.0 | 52.1 | 0.0 | 15.6 | 33.6 | 50 | 4 | 0.27 |
+| mps_L0 | 31.7 | 17.1 | 5.4 | 15.8 | 0.4 | 0.0 | 48.3 | 0.0 | 11.7 | 25.9 | 40 | 4 | 0.27 |
+| mps | 32.5 | 15.8 | 4.2 | 15.8 | 0.4 | 0.0 | 50.8 | 0.0 | 16.4 | 26.2 | 43 | 9 | 0.29 |
+Trade-off plot: components/safe_rl/report_figures_motor/go2_tradeoff.png
+
+failure rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (48)
+  alone                     21%   42%   38%   56%   79%
+  safe                      10%   15%   21%   44%   62%
+  abs                        8%   12%   12%   26%   46%
+  abs_walk                   4%    8%    7%   21%   38%
+  mps_pct                   12%   15%   19%   41%   60%
+  mps_k1                    12%   17%   24%   33%   56%
+  mps_L0                    13%   25%   24%   36%   62%
+  mps                       21%   22%   26%   36%   60%
+
+Plot: components/safe_rl/report_figures_motor/go2_loop_threshold.png
+
+======== closed loop: switch_back (compare_filter.py)
+240 episodes in every arm (0 left out); reference alone, which recovered from 128
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 46.7 | 34.2 | 7.9 | 8.8 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| abs | 20.0 | 8.3 | 2.5 | 10.0 | 0.0 | 0.0 | 56.7 | 0.0 | 21.9 | 44.1 | 70 | 6 | 0.21 |
+| abs_back | 17.5 | 5.8 | 2.1 | 11.2 | 0.0 | 0.0 | 55.8 | 0.0 | 20.3 | 17.2 | 72 | 2 | 0.21 |
+| mps | 32.5 | 15.8 | 4.2 | 15.8 | 0.4 | 0.0 | 50.8 | 0.0 | 16.4 | 26.2 | 43 | 9 | 0.29 |
+| mps_back | 33.8 | 19.2 | 2.9 | 14.6 | 0.4 | 0.0 | 50.4 | 0.0 | 12.5 | 14.0 | 38 | 7 | 0.28 |
+
+failure rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (48)
+  alone                     21%   42%   38%   56%   79%
+  abs                        8%   12%   12%   26%   46%
+  abs_back                  10%    7%   10%   23%   42%
+  mps                       21%   22%   26%   36%   60%
+  mps_back                  12%   27%   26%   41%   67%
+
+Plot: components/safe_rl/report_figures_motor/go2_loop_switch_back.png
+
+======== closed loop: ablation (compare_filter.py)
+240 episodes in every arm (0 left out); reference alone, which recovered from 128
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 46.7 | 34.2 | 7.9 | 8.8 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| mps | 32.5 | 15.8 | 4.2 | 15.8 | 0.4 | 0.0 | 50.8 | 0.0 | 16.4 | 26.2 | 43 | 9 | 0.29 |
+
+Episode by episode against mps (failures): failed only with the arm / only with mps, exact McNemar p
+  alone                     43 /   9, p 2.04e-06
+
+failure rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (48)
+  alone                     21%   42%   38%   56%   79%
+  mps                       21%   22%   26%   36%   60%
+
+Plot: components/safe_rl/report_figures_motor/go2_loop_ablation.png
+
+======== closed loop: start (compare_filter.py)
+240 episodes in every arm (0 left out); reference alone, which recovered from 128
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 46.7 | 34.2 | 7.9 | 8.8 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| safe | 29.2 | 9.2 | 1.2 | 19.6 | 0.0 | 0.0 | 100.0 | 0.0 | 100.0 | 52.1 | 68 | 26 | - |
+| abs | 20.0 | 8.3 | 2.5 | 10.0 | 0.0 | 0.0 | 56.7 | 0.0 | 21.9 | 44.1 | 70 | 6 | 0.21 |
+| mps | 32.5 | 15.8 | 4.2 | 15.8 | 0.4 | 0.0 | 50.8 | 0.0 | 16.4 | 26.2 | 43 | 9 | 0.29 |
+| mps_k1 | 27.5 | 13.3 | 4.2 | 14.6 | 0.0 | 0.0 | 52.1 | 0.0 | 15.6 | 33.6 | 50 | 4 | 0.27 |
+| mps_start | 30.0 | 16.2 | 3.3 | 12.9 | 0.0 | 0.0 | 55.0 | 0.0 | 23.4 | 34.8 | 47 | 7 | 0.23 |
+| mps_start_k1 | 29.6 | 16.7 | 4.2 | 12.5 | 0.0 | 0.0 | 53.8 | 0.0 | 18.0 | 32.6 | 47 | 6 | 0.26 |
+
+Episode by episode against abs (failures): failed only with the arm / only with abs, exact McNemar p
+  alone                     70 /   6, p 6.31e-15
+  safe                      37 /  15, p 0.00319
+  mps                       39 /   9, p 1.52e-05
+  mps_k1                    32 /  14, p 0.0114
+  mps_start                 33 /   9, p 0.000272
+  mps_start_k1              35 /  12, p 0.00109
+
+failure rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (48)
+  alone                     21%   42%   38%   56%   79%
+  safe                      10%   15%   21%   44%   62%
+  abs                        8%   12%   12%   26%   46%
+  mps                       21%   22%   26%   36%   60%
+  mps_k1                    12%   17%   24%   33%   56%
+  mps_start                 10%   20%   21%   41%   62%
+  mps_start_k1              19%   20%   21%   31%   58%
+
+Plot: components/safe_rl/report_figures_motor/go2_loop_start.png
+
+======== closed loop: start_vs_mps (compare_filter.py)
+240 episodes in every arm (0 left out); reference alone, which recovered from 128
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 46.7 | 34.2 | 7.9 | 8.8 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| mps | 32.5 | 15.8 | 4.2 | 15.8 | 0.4 | 0.0 | 50.8 | 0.0 | 16.4 | 26.2 | 43 | 9 | 0.29 |
+| mps_k1 | 27.5 | 13.3 | 4.2 | 14.6 | 0.0 | 0.0 | 52.1 | 0.0 | 15.6 | 33.6 | 50 | 4 | 0.27 |
+| mps_start | 30.0 | 16.2 | 3.3 | 12.9 | 0.0 | 0.0 | 55.0 | 0.0 | 23.4 | 34.8 | 47 | 7 | 0.23 |
+| mps_start_k1 | 29.6 | 16.7 | 4.2 | 12.5 | 0.0 | 0.0 | 53.8 | 0.0 | 18.0 | 32.6 | 47 | 6 | 0.26 |
+
+Episode by episode against mps (failures): failed only with the arm / only with mps, exact McNemar p
+  alone                     43 /   9, p 2.04e-06
+  mps_k1                    14 /  26, p 0.0807
+  mps_start                 24 /  30, p 0.497
+  mps_start_k1              21 /  28, p 0.392
+
+failure rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (48)
+  alone                     21%   42%   38%   56%   79%
+  mps                       21%   22%   26%   36%   60%
+  mps_k1                    12%   17%   24%   33%   56%
+  mps_start                 10%   20%   21%   41%   62%
+  mps_start_k1              19%   20%   21%   31%   58%
+
+Plot: components/safe_rl/report_figures_motor/go2_loop_start_vs_mps.png
+
+======== closed loop: walk (compare_filter.py)
+240 episodes in every arm (0 left out); reference alone, which recovered from 128
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 46.7 | 34.2 | 7.9 | 8.8 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| safe | 29.2 | 9.2 | 1.2 | 19.6 | 0.0 | 0.0 | 100.0 | 0.0 | 100.0 | 52.1 | 68 | 26 | - |
+| abs | 20.0 | 8.3 | 2.5 | 10.0 | 0.0 | 0.0 | 56.7 | 0.0 | 21.9 | 44.1 | 70 | 6 | 0.21 |
+| mps_k1 | 27.5 | 13.3 | 4.2 | 14.6 | 0.0 | 0.0 | 52.1 | 0.0 | 15.6 | 33.6 | 50 | 4 | 0.27 |
+| mps_start_t08 | 26.7 | 7.9 | 3.3 | 18.8 | 0.0 | 0.0 | 96.7 | 65.8 | 93.8 | 52.6 | 74 | 26 | -0.75 |
+| mps_walk | 23.3 | 10.8 | 3.8 | 11.7 | 0.0 | 0.0 | 68.8 | 0.4 | 44.5 | 43.6 | 63 | 7 | 0.25 |
+| mps_walk_k1 | 25.8 | 11.7 | 1.7 | 13.3 | 0.0 | 0.0 | 70.8 | 0.4 | 47.7 | 42.9 | 59 | 9 | 0.22 |
+| mps_walk_t8 | 23.8 | 10.8 | 2.5 | 12.5 | 0.0 | 0.0 | 55.8 | 0.0 | 23.4 | 39.6 | 61 | 6 | 0.25 |
+| mps_walk_t9 | 23.8 | 13.8 | 3.3 | 10.0 | 0.0 | 0.0 | 60.4 | 0.0 | 29.7 | 39.3 | 61 | 6 | 0.25 |
+| mps_start_walk | 21.7 | 10.4 | 0.4 | 10.8 | 0.0 | 0.0 | 75.4 | 0.0 | 54.7 | 47.0 | 67 | 7 | 0.21 |
+| mps_start_walk_k1 | 21.2 | 10.0 | 0.8 | 12.1 | 0.0 | 0.0 | 75.8 | 0.0 | 57.0 | 47.8 | 71 | 10 | 0.20 |
+| mps_start_walk_t8 | 19.2 | 10.4 | 0.8 | 9.6 | 0.0 | 0.0 | 70.0 | 0.0 | 47.7 | 50.0 | 73 | 7 | 0.20 |
+| mps_start_walk_t9 | 18.8 | 7.1 | 2.1 | 10.4 | 0.0 | 0.0 | 85.0 | 2.5 | 71.9 | 50.5 | 76 | 9 | 0.17 |
+| mps_start_walk2 | 30.0 | 15.4 | 2.9 | 12.9 | 0.0 | 0.0 | 67.1 | 0.0 | 39.8 | 39.1 | 54 | 14 | 0.20 |
+| mps_start_walk2_k1 | 31.7 | 14.2 | 2.1 | 16.2 | 0.0 | 0.0 | 65.4 | 0.8 | 36.7 | 34.4 | 50 | 14 | 0.21 |
+| mps_start_walk2_t8 | 23.8 | 10.8 | 2.9 | 12.1 | 0.0 | 0.0 | 77.1 | 0.4 | 57.8 | 48.1 | 66 | 11 | 0.16 |
+| mps_start_walk2_t9 | 20.4 | 10.4 | 2.1 | 9.6 | 0.0 | 0.0 | 83.3 | 3.3 | 68.8 | 55.0 | 73 | 10 | 0.14 |
+
+Episode by episode against abs (failures): failed only with the arm / only with abs, exact McNemar p
+  alone                     70 /   6, p 6.31e-15
+  safe                      37 /  15, p 0.00319
+  mps_k1                    32 /  14, p 0.0114
+  mps_start_t08             40 /  24, p 0.0599
+  mps_walk                  22 /  14, p 0.243
+  mps_walk_k1               26 /  12, p 0.0336
+  mps_walk_t8               24 /  15, p 0.2
+  mps_walk_t9               22 /  13, p 0.175
+  mps_start_walk            14 /  10, p 0.541
+  mps_start_walk_k1         19 /  16, p 0.736
+  mps_start_walk_t8         16 /  18, p 0.864
+  mps_start_walk_t9         16 /  19, p 0.736
+  mps_start_walk2           37 /  13, p 0.000936
+  mps_start_walk2_k1        37 /   9, p 4.06e-05
+  mps_start_walk2_t8        22 /  13, p 0.175
+  mps_start_walk2_t9        22 /  21, p 1
+
+failure rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (48)
+  alone                     21%   42%   38%   56%   79%
+  safe                      10%   15%   21%   44%   62%
+  abs                        8%   12%   12%   26%   46%
+  mps_k1                    12%   17%   24%   33%   56%
+  mps_start_t08              2%    8%   26%   49%   58%
+  mps_walk                  15%   12%   14%   26%   52%
+  mps_walk_k1                8%   19%   17%   23%   65%
+  mps_walk_t8               12%   15%   17%   33%   46%
+  mps_walk_t9               13%   15%   19%   23%   50%
+  mps_start_walk            15%    8%   14%   26%   48%
+  mps_start_walk_k1          8%    8%   14%   28%   52%
+  mps_start_walk_t8          8%    8%   14%   23%   46%
+  mps_start_walk_t9          6%    7%   12%   15%   56%
+  mps_start_walk2           19%   12%   24%   41%   60%
+  mps_start_walk2_k1        19%   17%   19%   49%   60%
+  mps_start_walk2_t8         8%   12%   17%   23%   62%
+  mps_start_walk2_t9        10%   10%   12%   23%   50%
+
+Plot: components/safe_rl/report_figures_motor/go2_loop_walk.png
+
+======== closed loop: robust (compare_filter.py)
+240 episodes in every arm (0 left out); reference alone, which recovered from 128
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 46.7 | 34.2 | 7.9 | 8.8 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| safe | 29.2 | 9.2 | 1.2 | 19.6 | 0.0 | 0.0 | 100.0 | 0.0 | 100.0 | 52.1 | 68 | 26 | - |
+| abs | 20.0 | 8.3 | 2.5 | 10.0 | 0.0 | 0.0 | 56.7 | 0.0 | 21.9 | 44.1 | 70 | 6 | 0.21 |
+| mps_walk_rob | 23.8 | 12.5 | 2.1 | 10.4 | 0.0 | 0.0 | 74.2 | 0.8 | 51.6 | 48.3 | 66 | 11 | 0.24 |
+| mps_walk_rob1 | 20.4 | 7.5 | 1.7 | 12.9 | 0.0 | 0.0 | 73.8 | 0.8 | 51.6 | 48.6 | 71 | 8 | 0.21 |
+| mps_start_walk_rob | 19.2 | 7.9 | 2.9 | 10.8 | 0.0 | 0.0 | 87.1 | 2.1 | 75.8 | 54.5 | 75 | 9 | 0.18 |
+| mps_start_walk_rob1 | 23.3 | 9.6 | 0.4 | 14.2 | 0.0 | 0.0 | 78.3 | 0.4 | 60.9 | 47.3 | 69 | 13 | 0.19 |
+| mps_start_walk2_rob | 31.2 | 13.3 | 3.8 | 16.2 | 0.0 | 0.0 | 67.9 | 0.4 | 41.4 | 38.7 | 47 | 10 | 0.18 |
+| mps_start_walk2_rob1 | 24.6 | 10.4 | 2.5 | 12.9 | 0.4 | 0.0 | 72.9 | 0.4 | 50.0 | 43.4 | 64 | 11 | 0.17 |
+
+Episode by episode against abs (failures): failed only with the arm / only with abs, exact McNemar p
+  alone                     70 /   6, p 6.31e-15
+  safe                      37 /  15, p 0.00319
+  mps_walk_rob              21 /  12, p 0.163
+  mps_walk_rob1             16 /  15, p 1
+  mps_start_walk_rob        15 /  17, p 0.86
+  mps_start_walk_rob1       21 /  13, p 0.229
+  mps_start_walk2_rob       38 /  11, p 0.000142
+  mps_start_walk2_rob1      27 /  16, p 0.126
+
+failure rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (48)
+  alone                     21%   42%   38%   56%   79%
+  safe                      10%   15%   21%   44%   62%
+  abs                        8%   12%   12%   26%   46%
+  mps_walk_rob              10%   15%   19%   28%   50%
+  mps_walk_rob1              8%   14%   21%   15%   46%
+  mps_start_walk_rob         6%    8%   12%   26%   48%
+  mps_start_walk_rob1       12%   12%   17%   23%   56%
+  mps_start_walk2_rob       17%   15%   26%   38%   65%
+  mps_start_walk2_rob1      13%    8%   17%   33%   56%
+
+Plot: components/safe_rl/report_figures_motor/go2_loop_robust.png
+
+======== closed loop: warmup (compare_filter.py)
+240 episodes in every arm (0 left out); reference alone, which recovered from 128
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 46.7 | 34.2 | 7.9 | 8.8 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| safe | 29.2 | 9.2 | 1.2 | 19.6 | 0.0 | 0.0 | 100.0 | 0.0 | 100.0 | 52.1 | 68 | 26 | - |
+| abs | 20.0 | 8.3 | 2.5 | 10.0 | 0.0 | 0.0 | 56.7 | 0.0 | 21.9 | 44.1 | 70 | 6 | 0.21 |
+| mps_start_walk_t9 | 18.8 | 7.1 | 2.1 | 10.4 | 0.0 | 0.0 | 85.0 | 2.5 | 71.9 | 50.5 | 76 | 9 | 0.17 |
+| mps_start_w02_walk | 17.5 | 6.7 | 2.1 | 10.0 | 0.0 | 0.0 | 75.0 | 0.8 | 54.7 | 47.2 | 78 | 8 | 0.16 |
+| mps_start_w02_walk_rob | 20.4 | 8.3 | 2.1 | 11.7 | 0.0 | 0.0 | 79.6 | 0.4 | 61.7 | 49.2 | 74 | 11 | 0.16 |
+| mps_start_w02_walk_rob1 | 20.0 | 7.1 | 2.1 | 11.7 | 0.0 | 0.0 | 77.9 | 1.2 | 58.6 | 54.0 | 75 | 11 | 0.16 |
+| mps_start_w02_walk_k1 | 23.3 | 9.6 | 2.9 | 13.8 | 0.0 | 0.0 | 68.3 | 0.4 | 44.5 | 47.6 | 69 | 13 | 0.16 |
+| mps_start_w02_walk_t8 | 22.1 | 8.8 | 2.9 | 12.1 | 0.0 | 0.0 | 77.1 | 1.7 | 57.8 | 47.0 | 72 | 13 | 0.15 |
+| mps_start_w02_walk_t9 | 25.4 | 10.8 | 2.5 | 14.2 | 0.0 | 0.0 | 85.0 | 7.5 | 71.9 | 48.0 | 65 | 14 | 0.13 |
+| mps_start_w03_walk | 20.0 | 7.9 | 2.9 | 10.8 | 0.0 | 0.0 | 72.9 | 0.4 | 50.8 | 50.3 | 73 | 9 | 0.17 |
+| mps_start_w03_walk_rob | 24.2 | 10.4 | 2.9 | 11.7 | 0.0 | 0.0 | 83.8 | 1.2 | 71.1 | 50.2 | 70 | 16 | 0.17 |
+| mps_start_w03_walk_rob1 | 20.0 | 7.1 | 1.7 | 12.1 | 0.0 | 0.0 | 78.8 | 0.8 | 60.9 | 48.7 | 74 | 10 | 0.16 |
+| mps_start_w03_walk_k1 | 24.2 | 10.8 | 2.1 | 12.5 | 0.4 | 0.0 | 75.4 | 0.8 | 56.2 | 42.0 | 65 | 11 | 0.16 |
+| mps_start_w03_walk_t8 | 23.3 | 9.6 | 2.9 | 14.2 | 0.0 | 0.0 | 77.9 | 0.8 | 60.2 | 46.0 | 68 | 12 | 0.15 |
+| mps_start_w03_walk_t9 | 20.8 | 6.2 | 2.9 | 12.9 | 0.0 | 0.0 | 91.7 | 7.1 | 84.4 | 55.5 | 77 | 15 | 0.12 |
+
+Episode by episode against abs (failures): failed only with the arm / only with abs, exact McNemar p
+  alone                     70 /   6, p 6.31e-15
+  safe                      37 /  15, p 0.00319
+  mps_start_walk_t9         16 /  19, p 0.736
+  mps_start_w02_walk        15 /  21, p 0.405
+  mps_start_w02_walk_rob    21 /  20, p 1
+  mps_start_w02_walk_rob1   23 /  23, p 1
+  mps_start_w02_walk_k1     28 /  20, p 0.312
+  mps_start_w02_walk_t8     26 /  21, p 0.56
+  mps_start_w02_walk_t9     30 /  17, p 0.0789
+  mps_start_w03_walk        16 /  16, p 1
+  mps_start_w03_walk_rob    27 /  17, p 0.174
+  mps_start_w03_walk_rob1   20 /  20, p 1
+  mps_start_w03_walk_k1     26 /  16, p 0.164
+  mps_start_w03_walk_t8     24 /  16, p 0.268
+  mps_start_w03_walk_t9     24 /  22, p 0.883
+
+failure rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (48)
+  alone                     21%   42%   38%   56%   79%
+  safe                      10%   15%   21%   44%   62%
+  abs                        8%   12%   12%   26%   46%
+  mps_start_walk_t9          6%    7%   12%   15%   56%
+  mps_start_w02_walk         6%    5%   14%   23%   44%
+  mps_start_w02_walk_rob     6%    3%   12%   28%   58%
+  mps_start_w02_walk_rob1    8%    8%   19%   26%   44%
+  mps_start_w02_walk_k1     10%    8%   26%   28%   50%
+  mps_start_w02_walk_t8     10%    8%   12%   33%   52%
+  mps_start_w02_walk_t9      6%   15%   14%   38%   58%
+  mps_start_w03_walk        12%   12%   12%   18%   48%
+  mps_start_w03_walk_rob    10%   15%   17%   36%   48%
+  mps_start_w03_walk_rob1   10%   14%   19%   23%   38%
+  mps_start_w03_walk_k1     15%   19%   19%   28%   42%
+  mps_start_w03_walk_t8     12%   14%   17%   31%   48%
+  mps_start_w03_walk_t9      6%    8%   19%   31%   46%
+
+Plot: components/safe_rl/report_figures_motor/go2_loop_warmup.png
+
+======== closed loop: big (compare_filter.py)
+240 episodes in every arm (0 left out); reference alone, which recovered from 128
+
+% of the episodes; walking: switched before the push; needless: of those the reference recovered from; stopped: of those switched in; switch s: median time of the filter's switch after the push start
+
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 46.7 | 34.2 | 7.9 | 8.8 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| safe | 29.2 | 9.2 | 1.2 | 19.6 | 0.0 | 0.0 | 100.0 | 0.0 | 100.0 | 52.1 | 68 | 26 | - |
+| abs | 20.0 | 8.3 | 2.5 | 10.0 | 0.0 | 0.0 | 56.7 | 0.0 | 21.9 | 44.1 | 70 | 6 | 0.21 |
+| abs_walk | 15.0 | 6.7 | 0.8 | 8.3 | 0.0 | 0.0 | 64.6 | 0.4 | 34.4 | 50.3 | 81 | 5 | 0.19 |
+| mps_start_w03_walk | 20.0 | 7.9 | 2.9 | 10.8 | 0.0 | 0.0 | 72.9 | 0.4 | 50.8 | 50.3 | 73 | 9 | 0.17 |
+| mps_start_w03_walk_t9 | 20.8 | 6.2 | 2.9 | 12.9 | 0.0 | 0.0 | 91.7 | 7.1 | 84.4 | 55.5 | 77 | 15 | 0.12 |
+| big_n3800_w1 | 30.4 | 11.7 | 5.0 | 15.8 | 0.0 | 0.0 | 69.6 | 0.4 | 45.3 | 38.3 | 54 | 15 | 0.16 |
+| big_n3800_w1_rob | 27.1 | 11.7 | 2.9 | 14.2 | 0.0 | 0.0 | 76.7 | 0.4 | 57.8 | 44.6 | 63 | 16 | 0.12 |
+| big_n3800_w1_rob1 | 25.0 | 11.2 | 5.0 | 11.7 | 0.0 | 0.0 | 75.8 | 1.2 | 57.0 | 48.4 | 66 | 14 | 0.12 |
+| big_n3800_w1_k1 | 26.2 | 11.2 | 2.9 | 15.0 | 0.0 | 0.0 | 69.2 | 0.4 | 46.1 | 45.2 | 65 | 16 | 0.13 |
+| big_n3800_w1_t8 | 22.9 | 7.5 | 0.8 | 15.0 | 0.0 | 0.0 | 88.3 | 3.3 | 78.9 | 50.9 | 71 | 14 | 0.10 |
+| big_n3800_w1_t9 | 20.8 | 6.2 | 0.0 | 14.6 | 0.0 | 0.0 | 96.2 | 11.2 | 93.0 | 57.1 | 77 | 15 | 0.08 |
+| big_n3800_w50 | 30.0 | 13.8 | 2.9 | 15.8 | 0.0 | 0.0 | 62.9 | 0.8 | 33.6 | 31.8 | 52 | 12 | 0.18 |
+| big_n3800_w50_rob | 24.2 | 10.4 | 1.2 | 13.3 | 0.0 | 0.0 | 67.5 | 1.7 | 42.2 | 45.1 | 64 | 10 | 0.14 |
+| big_n3800_w50_rob1 | 28.3 | 14.2 | 1.7 | 13.8 | 0.0 | 0.0 | 63.3 | 0.8 | 33.6 | 33.6 | 60 | 16 | 0.15 |
+| big_n3800_w50_k1 | 31.2 | 12.9 | 2.5 | 17.9 | 0.0 | 0.0 | 61.7 | 0.8 | 32.0 | 32.4 | 52 | 15 | 0.16 |
+| big_n3800_w50_t8 | 22.9 | 10.4 | 2.5 | 11.7 | 0.0 | 0.0 | 90.4 | 11.2 | 82.0 | 51.6 | 74 | 17 | 0.08 |
+| big_n3800_w50_t9 | 23.3 | 7.9 | 1.7 | 14.2 | 0.8 | 0.0 | 96.7 | 21.7 | 93.8 | 51.3 | 75 | 19 | 0.06 |
+
+Episode by episode against abs (failures): failed only with the arm / only with abs, exact McNemar p
+  alone                     70 /   6, p 6.31e-15
+  safe                      37 /  15, p 0.00319
+  abs_walk                   8 /  20, p 0.0357
+  mps_start_w03_walk        16 /  16, p 1
+  mps_start_w03_walk_t9     24 /  22, p 0.883
+  big_n3800_w1              35 /  10, p 0.000247
+  big_n3800_w1_rob          30 /  13, p 0.0137
+  big_n3800_w1_rob1         31 /  19, p 0.119
+  big_n3800_w1_k1           35 /  20, p 0.0581
+  big_n3800_w1_t8           27 /  20, p 0.382
+  big_n3800_w1_t9           26 /  24, p 0.888
+  big_n3800_w50             35 /  11, p 0.000536
+  big_n3800_w50_rob         23 /  13, p 0.132
+  big_n3800_w50_rob1        34 /  14, p 0.00552
+  big_n3800_w50_k1          39 /  12, p 0.000198
+  big_n3800_w50_t8          28 /  21, p 0.392
+  big_n3800_w50_t9          32 /  24, p 0.35
+
+failure rate per kick, m/s (episodes): 1.00 (52), 1.20 (59), 1.40 (42), 1.60 (39), 1.80 (48)
+  alone                     21%   42%   38%   56%   79%
+  safe                      10%   15%   21%   44%   62%
+  abs                        8%   12%   12%   26%   46%
+  abs_walk                   4%    8%    7%   21%   38%
+  mps_start_w03_walk        12%   12%   12%   18%   48%
+  mps_start_w03_walk_t9      6%    8%   19%   31%   46%
+  big_n3800_w1              12%   22%   29%   46%   50%
+  big_n3800_w1_rob          13%   17%   21%   33%   54%
+  big_n3800_w1_rob1         10%   14%   24%   38%   46%
+  big_n3800_w1_k1           13%   22%   24%   33%   42%
+  big_n3800_w1_t8           10%   12%   14%   41%   44%
+  big_n3800_w1_t9            6%    8%   17%   41%   40%
+  big_n3800_w50             13%   20%   24%   41%   56%
+  big_n3800_w50_rob          8%   15%   19%   38%   46%
+  big_n3800_w50_rob1        12%   19%   29%   38%   50%
+  big_n3800_w50_k1          21%   17%   24%   49%   52%
+  big_n3800_w50_t8           8%   10%   19%   38%   46%
+  big_n3800_w50_t9           4%    3%   14%   46%   58%
+
+Plot: components/safe_rl/report_figures_motor/go2_loop_big.png

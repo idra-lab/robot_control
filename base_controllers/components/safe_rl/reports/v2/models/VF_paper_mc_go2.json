@@ -1,0 +1,26 @@
+{
+  "method": "paper_mc",
+  "obs_dim": 228,
+  "threshold": 0.5,
+  "delta": 1,
+  "delta_max": 10,
+  "held_out_loss": 0.002135039772838354,
+  "data": [
+    "components/safe_rl/v2/data_handover/go2/mps/batch1/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch10/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch2/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch3/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch4/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch5/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch6/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch7/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch8/",
+    "components/safe_rl/v2/data_handover/go2/mps/batch9/"
+  ],
+  "v_thr": 0.9979447400569916,
+  "lipschitz_L": 0.00015787326912196538,
+  "L_V": 8.88510203367332e-06,
+  "L_f": 17.768312454223633,
+  "threshold_paper": 0.9981026133261136,
+  "threshold_walking": 0.9974183470010758
+}

@@ -1,0 +1,9 @@
+240 episodes, the same in every arm; reference alone.
+
+| arm | failed | fall rule | paper fall | knees | joint limits | speed only | switched | walking | needless | stopped | prevented | caused | switch s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| alone | 47.5 | 5.0 | 9.6 | 30.8 | 9.2 | 6.2 | 0.0 | 0.0 | 0.0 | - | 0 | 0 | - |
+| abs | 12.5 | 6.2 | 1.2 | 5.4 | 0.8 | 0.8 | 65.0 | 0.0 | 35.7 | 61.5 | 85 | 1 | 0.19 |
+| abs_back | 12.1 | 5.8 | 2.1 | 5.4 | 0.8 | 0.4 | 65.8 | 0.0 | 35.7 | 30.4 | 88 | 3 | 0.20 |
+| mps | 20.0 | 7.1 | 1.2 | 11.7 | 1.7 | 0.8 | 79.6 | 0.8 | 65.1 | 62.8 | 69 | 3 | 0.23 |
+| mps_back | 18.8 | 6.7 | 3.3 | 9.6 | 2.1 | 0.8 | 77.1 | 0.8 | 60.3 | 24.9 | 70 | 1 | 0.23 |

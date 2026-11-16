@@ -1,0 +1,21 @@
+1000 episodes (150 held out), observation 228
+train episodes kept 697 (timeouts left out), walking samples 5948 (failed 868), safe-policy samples 108998
+epoch 0: held-out walking samples, cross-entropy 0.1660, Brier 0.0500
+epoch 5: held-out walking samples, cross-entropy 0.1408, Brier 0.0328
+epoch 10: held-out walking samples, cross-entropy 0.2193, Brier 0.0445
+epoch 15: held-out walking samples, cross-entropy 0.1576, Brier 0.0330
+epoch 20: held-out walking samples, cross-entropy 0.1426, Brier 0.0291
+epoch 25: held-out walking samples, cross-entropy 0.1637, Brier 0.0284
+epoch 30: held-out walking samples, cross-entropy 0.1794, Brier 0.0291
+epoch 35: held-out walking samples, cross-entropy 0.1887, Brier 0.0292
+epoch 40: held-out walking samples, cross-entropy 0.1983, Brier 0.0296
+epoch 45: held-out walking samples, cross-entropy 0.2055, Brier 0.0298
+epoch 50: held-out walking samples, cross-entropy 0.2129, Brier 0.0302
+epoch 55: held-out walking samples, cross-entropy 0.2227, Brier 0.0315
+epoch 59: held-out walking samples, cross-entropy 0.2288, Brier 0.0320
+held-out delta = 1: 103 samples, 12 failed, AUC 0.993, mean Q recovered 0.973, failed 0.009
+============= Diagnostic Run torch.onnx.export version 2.0.0+cu117 =============
+verbose: False, log level: Level.ERROR
+======================= 0 NONE 0 NOTE 0 WARNING 0 ERROR ========================
+
+saved components/safe_rl/v2/models_handover/VF_mps_go2.onnx (threshold 0.9)
