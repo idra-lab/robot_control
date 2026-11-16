@@ -7,11 +7,18 @@
 #   data        fall-rule check (8 x FALL_EPISODES run to the ground); per method 6 batches of EPISODES
 #               for training (the 6th stops it) and 2 for the test; mps_early, the ablation of the
 #               handover time (the safe policy taking over from the push start, --switch-from push_start
-#               --switch-window 0 0.7)
+#               --switch-window 0 0.7); mps_start (only in VFS), the warm-up from the push start, as the
+#               original data collection had it (--switch-from push_start --switch-window 0 0.5), the
+#               push's force still acting for its 0.2 s after the handover
 #   calib-data  the walking policy alone, every state at 100 Hz: 8 x THR_EPISODES runs of 20 s with the
 #               evaluation's kicks (the threshold), 8 x MARGIN_EPISODES with light kicks (the margin)
 #   train       MODELS/VF_<name>_<robot>.pkl and .onnx, unless the .onnx exists (delete it to retrain):
-#               abs (ABS's reach-avoid training), mps (static equilibrium), mps_early (its dataset);
+#               abs (ABS's reach-avoid training), mps (static equilibrium), mps_early and mps_start
+#               (their datasets); mps_walk, mps_start_walk: mps and mps_start with ABS's training
+#               rollouts' undisturbed walking before the push anchored at V = 1 (--walking-data);
+#               mps_start_walk2 also on 6 more batches of mps_start data (mps_start_more);
+#               mps_start_w02_walk, mps_start_w03_walk: anchored, warm-ups of 0-0.2 and 0-0.3 s from
+#               the push start (mps_start_w02, mps_start_w03 data);
 #               aliengo also mps_polygon (X_inv: capture point in the support polygon)
 #   calibrate   threshold, margin and switching count of each model (calibrate_filter.py; abs: ABS's own
 #               rule, mps: the walking rule over 3 evaluations), into VF_<name>_<robot>.json
@@ -22,6 +29,11 @@
 #               the push start), abs at ABS's rule and at the walking rule (abs_walk), mps at its .json
 #               and at the paper's percentile threshold (mps_pct), without the margin (mps_L0), switching
 #               on a single value (mps_k1), switching back after 2 s (abs_back, mps_back), mps_early;
+#               mps_start at its .json and on a single value (mps_start_k1); mps_walk, mps_start_walk,
+#               mps_start_walk2, mps_start_w02_walk, mps_start_w03_walk, big_n3800_w1, big_n3800_w50 (the
+#               0-0.3 s warm-up on 3800 episodes, handover weight 1 and 50) at their .json, at the walking
+#               rule without the outlier episodes (_rob, 3 in a row; _rob1, a single value), on a single
+#               value (_k1) and at the levels 0.8 and 0.9 (_t8, _t9, a single value, no margin);
 #               aliengo also mps_polygon
 #   motor       (not in the default STAGES) the closed loop again with Gazebo limiting each joint's
 #               torque by its speed, Isaac Lab's DCMotor curve the policies were trained with
@@ -31,10 +43,17 @@
 #
 #   run_pipeline.sh [robot ...]        default: aliengo go2;  STAGES="train calibrate" for some stages
 #
+# MOTOR_LIMIT=1 runs every simulation with the motors' torque-speed curve (--motor-limit); VFS="abs mps"
+# trains and runs only those value functions (default abs mps mps_early, aliengo also mps_polygon).
+# The whole study with the curve, apart from the first:
+#   MOTOR_LIMIT=1 VFS="abs mps" OUT=components/safe_rl/value_function/observation_datasets/motor \
+#     MODELS=components/safe_rl/value_function/models_motor FIGURES=components/safe_rl/report_figures_motor \
+#     run_pipeline.sh go2 aliengo
+#
 # A stage skips the batches already complete, so an interrupted run resumes; delete a folder to redo
 # it.  About 3 h for the Aliengo (with the ablations) and 2.5 h for the Go2 on 24 cores, 8 simulations
 # at a time in real time.  Seeds per robot: SEED (aliengo 1000, go2 2000) + 0 fall check, 100 abs, 900
-# mps, 200 mps_early, 300 threshold runs, 400 margin runs, 500 closed loop.  Outputs, relative to
+# mps, 200 mps_early, 210 mps_start, 216 mps_start_more, 220 mps_start_w02, 226 mps_start_w03, 300 threshold runs, 400 margin runs, 500 closed loop.  Outputs, relative to
 # robot_control/base_controllers: OUT (components/safe_rl/value_function/observation_datasets)/<robot>/,
 # MODELS (.../value_function/models), FIGURES (components/safe_rl/report_figures).
 set -e
@@ -60,7 +79,7 @@ batches() {
   for i in $(seq 1 "$n"); do [ -f "$BC_HOST/$out/batch$i/observations_dataset_abs_test_episodes.csv" ] || done=0; done
   if [ $done = 1 ]; then echo "  $out: complete"; return; fi
   rm -rf "$BC_HOST/$out"
-  "$SR_HOST/run_batches.sh" "$first" "$n" "$episodes" "$out" "$@" > /dev/null
+  "$SR_HOST/run_batches.sh" "$first" "$n" "$episodes" "$out" "$@" ${MOTOR_LIMIT:+--motor-limit} > /dev/null
   wait_batches
   echo "  $out: $(cat "$BC_HOST/$out"/batch*/observations_dataset_abs_test_episodes.csv | grep -vc episode) episodes"
 }
@@ -84,6 +103,8 @@ for robot in $ROBOTS; do
   R="--robot $robot"
   models="abs mps mps_early"
   [ $ablations = 1 ] && models="$models mps_polygon"
+  models=${VFS:-$models}
+  has() { [[ " $models " == *" $1 "* ]]; }
 
   if stage data; then
     stamp "$robot: data"
@@ -92,7 +113,22 @@ for robot in $ROBOTS; do
     batches $((seed + 106)) 2 $EPISODES $D/abs/test $R --method abs
     batches $((seed + 900)) 6 $EPISODES $D/mps/episodes $R --method mps
     batches $((seed + 906)) 2 $EPISODES $D/mps/test $R --method mps
-    batches $((seed + 200)) 6 $EPISODES $D/mps_early/episodes $R --method mps --switch-from push_start --switch-window 0 0.7
+    if has mps_early; then
+      batches $((seed + 200)) 6 $EPISODES $D/mps_early/episodes $R --method mps --switch-from push_start --switch-window 0 0.7
+    fi
+    if has mps_start || has mps_start_walk || has mps_start_walk2; then
+      batches $((seed + 210)) 6 $EPISODES $D/mps_start/episodes $R --method mps --switch-from push_start --switch-window 0 0.5
+    fi
+    if has mps_start_walk2; then
+      batches $((seed + 216)) 6 $EPISODES $D/mps_start_more/episodes $R --method mps --switch-from push_start --switch-window 0 0.5
+    fi
+    # shorter warm-ups from the push start: the handovers where the filter switches (0.15-0.25 s)
+    for w in 2 3; do
+      if has mps_start_w0${w}_walk; then
+        batches $((seed + 220 + 6 * (w - 2))) 6 $EPISODES $D/mps_start_w0$w/episodes $R --method mps \
+          --switch-from push_start --switch-window 0 0.$w
+      fi
+    done
   fi
 
   if stage calib-data; then
@@ -105,15 +141,23 @@ for robot in $ROBOTS; do
   if stage train; then
     stamp "$robot: training $models"
     for name in $models; do
+      more=""
       case $name in
         abs) data=$D/abs; opts="--method abs";;
         mps) data=$D/mps; opts="--method mps";;
         mps_early) data=$D/mps_early; opts="--method mps";;
+        mps_start) data=$D/mps_start; opts="--method mps";;
+        # the undisturbed walking before the push in ABS's rollouts, anchored at V = 1
+        mps_walk) data=$D/mps; opts="--method mps --walking-data $(npy $D/abs/episodes)";;
+        mps_start_walk) data=$D/mps_start; opts="--method mps --walking-data $(npy $D/abs/episodes)";;
+        mps_start_walk2) data=$D/mps_start; opts="--method mps --walking-data $(npy $D/abs/episodes)"
+          more=$(npy $D/mps_start_more/episodes);;
+        mps_start_w02_walk|mps_start_w03_walk) data=$D/${name%_walk}; opts="--method mps --walking-data $(npy $D/abs/episodes)";;
         mps_polygon) data=$D/mps; opts="--method mps --x-inv polygon";;
       esac
       [ -f "$BC_HOST/$MODELS/VF_${name}_$robot.onnx" ] && continue
       # three trainings at a time, 4 cores each
-      in_image python3 $VF/train_value_function.py $opts --data $(npy $data/episodes | grep -v batch6) \
+      in_image python3 $VF/train_value_function.py $opts --data $(npy $data/episodes | grep -v batch6) $more \
         --val $(npy $data/episodes | grep batch6) --model $MODELS/VF_${name}_$robot.pkl --epochs $EPOCHS \
         > "$BC_HOST/$D/train_$name.log" 2>&1 &
       [ $(jobs -r | wc -l) -ge 3 ] && wait -n
@@ -162,6 +206,22 @@ for robot in $ROBOTS; do
     loop mps_k1 $(filter mps) --threshold $(setting mps "['rule_thresholds']['walking_k1']") \
       --margin $(setting mps "['margin_k1']") --min-switch 1
     for name in abs mps; do loop ${name}_back --filter $MODELS/VF_${name}_$robot.onnx; done
+    for name in mps_walk mps_start_walk mps_start_walk2 mps_start_w02_walk mps_start_w03_walk big_n3800_w1 big_n3800_w50; do
+      has $name || continue
+      # the walking rule without the outlier walking episodes (calibrate_filter.py, walking_robust)
+      loop ${name}_rob $(filter $name) --threshold $(setting $name "['rule_thresholds']['walking_robust']") \
+        --margin $(setting $name "['margin']") --min-switch 3
+      loop ${name}_rob1 $(filter $name) --threshold $(setting $name "['rule_thresholds']['walking_robust_k1']") \
+        --margin $(setting $name "['margin_k1']") --min-switch 1
+      loop ${name}_k1 $(filter $name) --threshold $(setting $name "['rule_thresholds']['walking_k1']") \
+        --margin $(setting $name "['margin_k1']") --min-switch 1
+      # fixed levels, a switch on a single value below them
+      for level in 0.8 0.9; do loop ${name}_t${level#0.} $(filter $name) --threshold $level --margin 0 --min-switch 1; done
+    done
+    if has mps_start; then
+      loop mps_start_k1 $(filter mps_start) --threshold $(setting mps_start "['rule_thresholds']['walking_k1']") \
+        --margin $(setting mps_start "['margin_k1']") --min-switch 1
+    fi
   fi
 
   if stage motor; then

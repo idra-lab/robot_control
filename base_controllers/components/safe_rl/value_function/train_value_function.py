@@ -5,6 +5,8 @@
     python3 train_value_function.py --method abs|mps [--data <dataset.npy> ...] [--val <dataset.npy> ...]
                                     [--model <model.pkl>] [--epochs N] [--x-inv static|polygon]
                                     [--obs-noise S] [--seed N]
+                                    [--walking-data <abs dataset.npy> ...] [--walking-weight W]
+                                    [--handover-weight W] [--val-every N]
 
 TD(0) on the transitions of the datasets saferl_controller_dataset.py writes, V(x') from a target
 network updated by an exponential moving average.  Several datasets are pooled, e.g. runs with
@@ -29,6 +31,18 @@ threshold of 0.05 on the score.
 on): I_CP is the invariant set --x-inv, static equilibrium (default) or the capture point in the
 support polygon; the episode ends at its first sample there.  An episode that ends in neither a fall
 nor the set (a timeout) has no target for its last state and is left out.
+
+--walking-data (mps): datasets of --method abs, whose rollouts start 1 s into the walking policy:
+their samples before the push are undisturbed walking, the states the safe policy recovers from
+every time it takes over there (0 failures in the walk handovers of 2026-11-06), yet an mps episode
+holds one walking state, the one it hands over at.  Each minibatch adds a minibatch of them with
+target 1, weight --walking-weight against the TD loss: supervised, as their next state is the walking
+policy's, not the safe policy's.
+
+--handover-weight W (mps): each episode's first transition, the state the safe policy takes over from
+(a walking-policy state, the kind the filter evaluates), W times in the training set (an integer; 1
+leaves it as recorded: about 1 transition in 140).  The held-out Brier score weighs those states the
+same way, so the model kept is the one best on them as much as the training weighs them.
 
 --obs-noise S adds Gaussian noise of S times SENSOR_NOISE to the states fed to V (not to the
 targets): V of a measurement learns the value of the state it measures, as on the robot.
@@ -66,8 +80,14 @@ parser.add_argument("--method", choices=("abs", "mps"), required=True)
 parser.add_argument("--x-inv", choices=("static", "polygon"), default="static", help="mps: the invariant set")
 parser.add_argument("--obs-noise", type=float, default=0.0, help="state noise, times SENSOR_NOISE")
 parser.add_argument("--seed", type=int, default=0)
+parser.add_argument("--walking-data", nargs="*", default=[], help="mps: abs datasets, their undisturbed walking "
+                    "before the push anchored at V = 1")
+parser.add_argument("--walking-weight", type=float, default=1.0)
+parser.add_argument("--handover-weight", type=int, default=1, help="mps: the handover transitions this many times")
+parser.add_argument("--val-every", type=int, default=25, help="epochs between held-out scores")
 args = parser.parse_args()
 data_paths = [os.path.abspath(path) for path in args.data]
+walking_paths = [os.path.abspath(path) for path in args.walking_data]
 val_paths = [os.path.abspath(path) for path in args.val]
 model_path = os.path.abspath(args.model)
 os.chdir(BASE_DIR)   # force working directory to match script directory
@@ -118,18 +138,25 @@ def td_target(columns, V_next):
     return (1.0 - fallen) * ((1.0 - cp) * V_next + cp)
 
 
-def loss_fn(params, batch_states, batch_next_states, batch_columns, target_params, noise):
-    # loss = (V(s) - target)^2, V on the states with the sensor noise (none without --obs-noise)
+def loss_fn(params, batch_states, batch_next_states, batch_columns, target_params, noise, batch_walking,
+            walking_noise):
+    # loss = (V(s) - target)^2, V on the states with the sensor noise (none without --obs-noise); with
+    # --walking-data, plus walking_weight (V(x_walking) - 1)^2
     V_s = model.apply(params, batch_states + noise)
     V_next = jax.lax.stop_gradient(model.apply(target_params, batch_next_states))
     target = td_target(batch_columns, V_next)
-    return jnp.mean(jnp.square(V_s - target))
+    loss = jnp.mean(jnp.square(V_s - target))
+    if walking_paths:
+        loss = loss + args.walking_weight * jnp.mean(jnp.square(model.apply(params, batch_walking + walking_noise) - 1.0))
+    return loss
 
 @jax.jit
-def train_step(state, batch_states, batch_next_states, batch_columns, target_params, key):
+def train_step(state, batch_states, batch_next_states, batch_columns, target_params, key, batch_walking):
+    key, walking_key = jax.random.split(key)
     noise = noise_std * jax.random.normal(key, batch_states.shape)
+    walking_noise = noise_std * jax.random.normal(walking_key, batch_walking.shape)
     loss, grads = jax.value_and_grad(loss_fn)(state.params, batch_states, batch_next_states, batch_columns,
-                                              target_params, noise)
+                                              target_params, noise, batch_walking, walking_noise)
     # optimizer step to update params, Takes the gradients, Updates the parameters using the optimizer (params - learning_rate * Adam_update(grads))
     # replaces the old state with a new one containing the updated model (states.params)
     # Returns a new TrainState with updated values
@@ -221,7 +248,7 @@ def load_transitions(path):
     if args.method == "abs" and ra is None:
         raise SystemExit(f"{path}: no {ra_path}; record the data with saferl_controller_dataset.py --method abs")
     print("Dataset loaded:", path, data.shape)
-    rows, columns, outcomes, fell, dropped = [], [], [], [], 0
+    rows, columns, outcomes, fell, first, dropped = [], [], [], [], [], 0
     for e, episode in enumerate(data):
         valid = np.any(episode[:, :input_dim] != 0, axis=1)
         episode = episode[valid].copy()
@@ -232,6 +259,7 @@ def load_transitions(path):
             columns.append(cols)
             outcomes.append(-value)  # the safety score the model outputs
             fell.append(np.full(n, episode[-1, -2] == 1))
+            first.append(np.zeros(n, dtype=bool))
             continue
         if args.method == "mps":
             if args.x_inv == "polygon":
@@ -250,11 +278,24 @@ def load_transitions(path):
         columns.append(np.column_stack([episode[:, -2], episode[:, -1], np.zeros(len(episode)), np.zeros(len(episode))]))
         outcomes.append(outcome)
         fell.append(np.full(len(episode), episode[-1, -2] == 1))
+        first.append(np.arange(len(episode)) == 0)  # the handover state
     if dropped:
         print(f"  {dropped} of {len(data)} episodes left out: they ended in neither a failure nor the invariant set")
     data = np.concatenate(rows)
     return (data[:, :input_dim], data[:, input_dim:2 * input_dim], np.concatenate(columns), np.concatenate(outcomes),
-            np.concatenate(fell))
+            np.concatenate(fell), np.concatenate(first))
+
+def load_walking(path):
+    """The undisturbed walking states of an abs dataset: its samples (50 Hz from 1 s, dataset_manager.py
+    vf_from) whose transition ends at least a sample before the push starts."""
+    data = np.load(path)
+    episodes = np.atleast_1d(np.genfromtxt(os.path.splitext(path)[0] + "_episodes.csv", delimiter=",", names=True))
+    walking = []
+    for ep in episodes[episodes["row"] >= 0]:
+        n = int(np.floor((ep["push_time"] - 1.0) / 0.02)) - 1
+        rows = data[int(ep["row"]), :max(n, 0), :input_dim]
+        walking.append(rows[np.any(rows != 0, axis=1)])
+    return np.concatenate(walking)
 
 datasets = [load_transitions(path) for path in data_paths]
 states = np.concatenate([d[0] for d in datasets])
@@ -268,14 +309,29 @@ else:
     print(f"Transitions: {len(states)}, labelled failed {int(columns[:, 0].sum())}, labelled success {int(columns[:, 1].sum())}")
 
 states, mean, std = normalize_states(states)
+if walking_paths:
+    walking_states = np.concatenate([load_walking(path) for path in walking_paths])
+    print(f"Walking states anchored at V = 1: {len(walking_states)}, weight {args.walking_weight}")
+    walking_states = jnp.array((walking_states - mean) / (std + 1e-8), dtype=jnp.float32)
+else:
+    walking_states = jnp.zeros((1, input_dim), dtype=jnp.float32)
 # the next states with the states' statistics: V sees both through the same normalisation
 next_states = (next_states - mean) / (std + 1e-8)
 if val_paths:
     val_sets = [load_transitions(path) for path in val_paths]
     val_states = jnp.array((np.concatenate([d[0] for d in val_sets]) - mean) / (std + 1e-8), dtype=jnp.float32)
     val_outcome = np.concatenate([d[3] for d in val_sets])
+    val_first = np.concatenate([d[5] for d in val_sets])
+    val_weight = np.where(val_first, args.handover_weight, 1.0)
 # the state noise in the normalised space
 noise_std = jnp.array(args.obs_noise * SENSOR_NOISE / (std + 1e-8), dtype=jnp.float32)
+
+# --handover-weight: the handover transitions repeated (the normalisation above is the recorded data's)
+handover = np.concatenate([d[5] for d in datasets])
+if args.handover_weight > 1:
+    keep = np.concatenate([np.arange(len(states)), np.repeat(np.flatnonzero(handover), args.handover_weight - 1)])
+    states, next_states, columns = states[keep], next_states[keep], columns[keep]
+    print(f"Handover transitions: {handover.sum()}, each {args.handover_weight} times: {len(states)} transitions")
 
 # ====================================
 #         Convert to JAX tensors
@@ -344,8 +400,10 @@ with tqdm(range(epochs), desc="Epoch") as pbar:
         # batches = (states (num_batches, batch_size, dim), next states (same), target columns
         # (num_batches, batch_size, 4)); one gradient update per minibatch
         for batch_states, batch_next_states, batch_columns in zip(*batches):
-            rng, noise_key = jax.random.split(rng)
-            state, loss = train_step(state, batch_states, batch_next_states, batch_columns, target_params, noise_key)
+            rng, noise_key, walking_key = jax.random.split(rng, 3)
+            batch_walking = walking_states[jax.random.randint(walking_key, (batch_states.shape[0],), 0, walking_states.shape[0])]
+            state, loss = train_step(state, batch_states, batch_next_states, batch_columns, target_params, noise_key,
+                                     batch_walking)
             #Update target network, target_params = tau * new_params + (1 - tau) * old_target_params, This is Polyak averaging (soft target update), which stabilizes TD learning.
             target_params = update_target_params(target_params, state.params, tau)
             #Accumulate total epoch loss
@@ -363,13 +421,15 @@ with tqdm(range(epochs), desc="Epoch") as pbar:
         #Update progress bar
         pbar.set_postfix({"Loss": f"{epoch_avg:.2e}", "Hz": f"{1 / (time.time() - start_time):.2f}"})
         # keep the model that scores best on the held-out episodes
-        if val_paths and (epoch + 1) % 25 == 0:
+        if val_paths and (epoch + 1) % args.val_every == 0:
             # mps: the Brier score of V against the outcome; abs: the squared error of the score against
             # the Monte Carlo reach-avoid value of the held-out episodes
-            brier = np.mean((SIGN * np.asarray(model.apply(state.params, val_states)) - val_outcome) ** 2)
+            err = (SIGN * np.asarray(model.apply(state.params, val_states)) - val_outcome) ** 2
+            brier = np.average(err, weights=val_weight)
             if brier < best_brier:
                 best_brier, best_params, best_epoch = brier, state.params, epoch + 1
-            pbar.write(f"epoch {epoch + 1}: held-out Brier score {brier:.4f} (best {best_brier:.4f}, epoch {best_epoch})")
+            pbar.write(f"epoch {epoch + 1}: held-out Brier score {brier:.4f} (best {best_brier:.4f}, epoch {best_epoch}); "
+                       f"on the handover states {np.mean(err[val_first]) if val_first.any() else np.nan:.4f}")
 
 if best_params is not None:
     print(f"Held-out Brier score best at epoch {best_epoch}: {best_brier:.4f}, that model is saved")
@@ -381,7 +441,9 @@ if best_params is not None:
 with open(model_path, 'wb') as f:
     pickle.dump({'model_params': state.params, 'mean': mean, 'std': std, 'method': args.method, 'sign': SIGN,
                  'gamma_ra': GAMMA_RA if args.method == "abs" else None,
-                 'x_inv': args.x_inv if args.method == "mps" else None, 'obs_noise': args.obs_noise}, f)
+                 'x_inv': args.x_inv if args.method == "mps" else None, 'obs_noise': args.obs_noise,
+                 'walking_data': args.walking_data, 'walking_weight': args.walking_weight if walking_paths else None,
+                 'handover_weight': args.handover_weight}, f)
 print("Model saved at", model_path)
 # the runtime format: the safety filter runs the ONNX export (value_function_manager.py)
 from export_onnx import export_onnx
@@ -393,7 +455,7 @@ export_onnx(model_path)
 # V(x) of every state, grouped by how its episode ended: the states of a falling episode, up to the
 # fall, against those of the episodes that recovered (evaluate_value_function.py has the details,
 # e.g. how long before a fall V drops)
-v_est = SIGN * np.asarray(model.apply(state.params, states))
+v_est = SIGN * np.asarray(model.apply(state.params, states[:len(episode_fell)]))  # the recorded transitions
 level = 0.05 if args.method == "abs" else 0.5  # ABS's rule on the score; half the chance for mps
 print("\n===== Value Estimate Statistics (the model's output: V, or the score -V_RA) =====")
 for name, mask in (("Episodes that failed", episode_fell), ("Episodes that recovered", ~episode_fell)):

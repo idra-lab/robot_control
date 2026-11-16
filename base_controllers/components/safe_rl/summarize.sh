@@ -74,5 +74,11 @@ table consecutive mps alone mps mps_k1
 table threshold - alone safe abs abs_walk mps_pct mps_k1 mps_L0 mps mps_early mps_polygon
 table switch_back - alone abs abs_back mps mps_back
 table ablation mps alone mps mps_early mps_polygon
+table start abs alone safe abs mps mps_k1 mps_start mps_start_k1
+table start_vs_mps mps alone mps mps_k1 mps_start mps_start_k1
+table walk abs alone safe abs mps_k1 mps_start_t08 mps_walk mps_walk_k1 mps_walk_t8 mps_walk_t9 mps_start_walk mps_start_walk_k1 mps_start_walk_t8 mps_start_walk_t9 mps_start_walk2 mps_start_walk2_k1 mps_start_walk2_t8 mps_start_walk2_t9
+table robust abs alone safe abs mps_walk_rob mps_walk_rob1 mps_start_walk_rob mps_start_walk_rob1 mps_start_walk2_rob mps_start_walk2_rob1
+table warmup abs alone safe abs mps_start_walk_t9 mps_start_w02_walk mps_start_w02_walk_rob mps_start_w02_walk_rob1 mps_start_w02_walk_k1 mps_start_w02_walk_t8 mps_start_w02_walk_t9 mps_start_w03_walk mps_start_w03_walk_rob mps_start_w03_walk_rob1 mps_start_w03_walk_k1 mps_start_w03_walk_t8 mps_start_w03_walk_t9
+table big abs alone safe abs abs_walk mps_start_w03_walk mps_start_w03_walk_t9 big_n3800_w1 big_n3800_w1_rob big_n3800_w1_rob1 big_n3800_w1_k1 big_n3800_w1_t8 big_n3800_w1_t9 big_n3800_w50 big_n3800_w50_rob big_n3800_w50_rob1 big_n3800_w50_k1 big_n3800_w50_t8 big_n3800_w50_t9
 table motor abs_motor alone_motor safe_motor abs_motor mps_motor
 } 2>&1 | grep -v "GPU/TPU" | tee $FIGURES/${robot}_summary.txt

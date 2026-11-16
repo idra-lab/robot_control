@@ -27,6 +27,10 @@ evaluation's kicks in each): undisturbed walking before the push, then the push 
     walking states of --threshold-data: with --consecutive k, the filter switches only after k values
     in a row below its level, so the level is the lowest, over the walking states, of the largest of
     k consecutive values; threshold = that level - L.  A single-sample dip of V does not count.
+  walking_robust: the walking rule without its outlier episodes: from --filter-from s on (the
+    filter is off before), per episode the lowest of the k-consecutive maxima, and the level the
+    --walking-tolerance % lowest episodes go below; a walking false switch in that share of the
+    episodes, the rest of the walking never below.  Also for a single value (walking_robust_k1).
   percentile: the paper's statistical rule, V below 99 % of the values over all the states, walking
     and pushed (--percentile 1).  It controls a rate per state, not per unit of time, and falls on
     the steep drop of V before a failure, so it moves with the share of failing states in the data.
@@ -49,9 +53,9 @@ SAMPLE_DT = 0.01  # s, the calibration runs' and the filter's period
 ABS_THRESHOLD = 0.05  # ABS: recovery when V_RA >= -0.05
 
 
-def load_episodes(paths):
+def load_episodes(paths, times=False):
     """Per episode, its states at 0.01 s (n + 1, the transitions' states and the last next state) and
-    which of them came before the push."""
+    which of them came before the push (and, with times, the states' times)."""
     episodes = []
     for path in paths:
         data = np.load(path)
@@ -61,7 +65,7 @@ def load_episodes(paths):
             row = row[np.any(row[:, :STATE] != 0, axis=1)]
             states = np.vstack([row[:, :STATE], row[-1:, STATE:2 * STATE]])
             t = ep["end_time"] - SAMPLE_DT * np.arange(len(states))[::-1]
-            episodes.append((states, t < ep["push_time"]))
+            episodes.append((states, t < ep["push_time"], t) if times else (states, t < ep["push_time"]))
     return episodes
 
 
@@ -70,12 +74,15 @@ def main():
     parser.add_argument("--model", required=True, help="the .onnx; the .pkl next to it gives the normalisation")
     parser.add_argument("--threshold-data", nargs="+", required=True)
     parser.add_argument("--margin-data", nargs="+", required=True)
-    parser.add_argument("--rule", choices=("walking", "percentile", "risk", "abs"), default=None,
+    parser.add_argument("--rule", choices=("walking", "walking_robust", "percentile", "risk", "abs"), default=None,
                         help="default: abs for the ABS baseline, walking otherwise")
     parser.add_argument("--consecutive", type=int, default=3, help="evaluations in a row below the level to switch")
     parser.add_argument("--action-delay", type=float, default=0.03, help="s from the decision to the safe policy acting")
     parser.add_argument("--percentile", type=float, default=1.0)
     parser.add_argument("--risk", type=float, default=0.1)
+    parser.add_argument("--walking-tolerance", type=float, default=2.5,
+                        help="walking_robust: %% of the walking episodes allowed to switch (the outliers)")
+    parser.add_argument("--filter-from", type=float, default=1.0, help="walking_robust: s the filter starts at")
     parser.add_argument("--trim", type=float, default=5.0)
     parser.add_argument("--sweep", type=float, nargs="*", default=[0.5, 2.0], help="more percentiles, for reference")
     parser.add_argument("--write", action="store_true", help="write <model>.json")
@@ -117,21 +124,32 @@ def main():
           f"percentile {np.percentile(dv, 99):.4f}); used {margin:.4f}")
 
     # -- threshold
-    episodes = load_episodes(args.threshold_data)
-    values = [value(s) for s, _ in episodes]
+    episodes = load_episodes(args.threshold_data, times=True)
+    values = [value(s) for s, _, _ in episodes]
     v = np.concatenate(values)
-    walking_v = [vals[before] for vals, (_, before) in zip(values, episodes) if before.sum() >= k]
+    walking_v = [vals[before] for vals, (_, before, _) in zip(values, episodes) if before.sum() >= k]
+    # walking_robust: per episode, the walking while the filter is on, its lowest k-consecutive maximum
+    # and lowest value; the --walking-tolerance % lowest episodes are the outliers
+    filtered = [vals[before & (t >= args.filter_from)] for vals, (_, before, t) in zip(values, episodes)]
+    filtered = [w for w in filtered if len(w) >= k]
+    episode_rolling = np.array([np.lib.stride_tricks.sliding_window_view(w, k).max(axis=1).min() for w in filtered])
+    episode_min = np.array([w.min() for w in filtered])
     # the largest of k consecutive values, per walking stretch: the filter switches only below all k
     rolling = np.concatenate([np.lib.stride_tricks.sliding_window_view(w, k).max(axis=1) for w in walking_v])
     walking = np.concatenate(walking_v)
     rules = {"walking": float(rolling.min()) - margin, "percentile": float(np.percentile(v, args.percentile)),
-             "risk": 1.0 - args.risk, "abs": ABS_THRESHOLD, "walking_k1": float(walking.min()) - margin_k1}
+             "risk": 1.0 - args.risk, "abs": ABS_THRESHOLD, "walking_k1": float(walking.min()) - margin_k1,
+             "walking_robust": float(np.percentile(episode_rolling, args.walking_tolerance)) - margin,
+             "walking_robust_k1": float(np.percentile(episode_min, args.walking_tolerance)) - margin_k1}
     threshold = rules[rule]
     sweep = {f"{p:g}": round(float(np.percentile(v, p)), 4) for p in args.sweep}
     print(f"Threshold data: {len(v)} states, {len(walking)} of them undisturbed walking; walking: lowest value "
           f"{walking.min():.4f}, lowest of {k} in a row {rolling.min():.4f}, 0.1st percentile {np.percentile(walking, 0.1):.4f}")
     print("  rules: " + ", ".join(f"{name} {t:.4f}" for name, t in rules.items())
           + "; percentiles " + ", ".join(f"{p}th {t:.4f}" for p, t in sweep.items()))
+    for name, lowest, m in (("walking_robust", episode_rolling, margin), ("walking_robust_k1", episode_min, margin_k1)):
+        print(f"  {name}: {len(lowest)} walking episodes from {args.filter_from:g} s, {np.sum(lowest < rules[name] + m)} "
+              f"of them below the level {rules[name] + m:.4f}; the 5 lowest " + ", ".join(f"{x:.3f}" for x in np.sort(lowest)[:5]))
     print(f"Threshold, rule {rule}: {threshold:.4f}, switching below {threshold + margin:.4f} for "
           f"{1 if rule == 'abs' else k} evaluation(s)")
     level = threshold + margin
@@ -148,6 +166,7 @@ def main():
                     "margin_k1": round(margin_k1, 4),
                     "percentile": args.percentile, "risk": args.risk, "thresholds": sweep,
                     "walking_lowest": float(walking.min()), "walking_lowest_consecutive": float(rolling.min()),
+                    "walking_tolerance": args.walking_tolerance, "filter_from": args.filter_from,
                     "trim": args.trim, "lipschitz_v": lipschitz_v, "lipschitz_f": lipschitz_f,
                     "threshold_states": int(len(v)), "margin_pairs": int(len(step)),
                     "walking_windows_below": float(np.mean(rolling < level))}
