@@ -256,6 +256,11 @@ class VelocityPolicy:
         self._decimation_counter = 0
         self._ready = False
         self.inference_count = 0
+        # None, or a callable on_observation(obs) run at every inference once the observation is
+        # built and before the network runs (the safety filter's hook): it returns None to keep the
+        # active variant, or (variant, velocity_cmd) to run that variant on this very observation,
+        # with the command block overwritten.  obs is the live buffer: copy it to keep it.
+        self.on_observation = None
 
         self._out = np.zeros((1, self.num_actions), dtype=np.float32)
         self.estimated_base_lin_vel = np.zeros(3)
@@ -334,6 +339,11 @@ class VelocityPolicy:
             self._push("joint_pos_rel", np.asarray(q) - self.q_default)
             self._push("joint_vel_rel", qd)
             self._obs_flat[self._cmd_slice] = velocity_cmd
+            if self.on_observation is not None:
+                switch = self.on_observation(self._obs_flat)
+                if switch is not None:
+                    self.select(switch[0])
+                    self._obs_flat[self._cmd_slice] = switch[1]
 
             action = self._net.infer()
             if self._net.has_estimator:

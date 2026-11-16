@@ -88,13 +88,17 @@ class SafeRLControllerDataset(QuadrupedController):
         pin.updateFramePlacements(self.robot.model, self.robot.data)
         return -np.mean([self.robot.data.oMf[i].translation[2] for i in self.robot.getEndEffectorsFrameId])
 
-    def push(self, force_xy, duration):
-        """A horizontal force on the base, in the world frame, for duration s from now: the push of
-        the push benchmark (rl_quadruped/push_sweep.py).  A push sets no velocity, so the joint
-        velocities and the base rotation are left as they are; setting the model twist would set
-        them on every link."""
+    def push(self, force, duration, torque=None):
+        """A force on the base (x, y or x, y, z), in the world frame, for duration s from now: the
+        push of the push benchmark (rl_quadruped/push_sweep.py); torque, world frame, about the base
+        origin.  A push sets no velocity, so the joint velocities and the base rotation are left as
+        they are; setting the model twist would set them on every link."""
         wrench = Wrench()
-        wrench.force.x, wrench.force.y = force_xy
+        wrench.force.x, wrench.force.y = force[0], force[1]
+        if len(force) > 2:
+            wrench.force.z = force[2]
+        if torque is not None:
+            wrench.torque.x, wrench.torque.y, wrench.torque.z = torque
         response = self.apply_body_wrench(body_name=self.robot_name + "::base_link", reference_frame="world",
                                           reference_point=Point(), wrench=wrench, start_time=ros.Time(0),
                                           duration=ros.Duration(duration))
@@ -166,6 +170,9 @@ if __name__ == '__main__':
                         help="safety filter margin L, V < threshold + L switches (default: the model's .json, else 0)")
     parser.add_argument("--min-switch", type=int, default=None,
                         help="safety filter: evaluations in a row below the level to switch (default the model's .json)")
+    parser.add_argument("--watch", nargs="+", default=None, metavar="MODEL",
+                        help="value functions (.onnx) evaluated alongside, not acting, each at its .json's settings: "
+                             "their values and decisions per tick in <out>/observations_dataset_abs_test_vf_trace.npz")
     parser.add_argument("--no-switch-back", action="store_true",
                         help="the safety filter keeps the safe policy once it switched (the paper's simulations)")
     parser.add_argument("--record-all", action="store_true", help="record from 1 s on, walking included")
@@ -183,6 +190,18 @@ if __name__ == '__main__':
                         help="Gazebo limits each joint's torque by its speed as Isaac Lab's DCMotor does (full torque at "
                              "standstill, none at the URDF velocity limit; the robot description's motor_curve, "
                              "LOCOSIM_MOTOR_SPEED_LIMIT)")
+    parser.add_argument("--v2", action="store_true",
+                        help="record the policy's observation at every inference (v2_dataset.npz, components/safe_rl/v2)")
+    parser.add_argument("--shield", default=None, metavar="MODEL",
+                        help="v2 safety filter: a model of components/safe_rl/v2/train.py (.onnx, its .json next to it)")
+    parser.add_argument("--shield-threshold", type=float, default=None, help="v2 filter threshold (default its .json)")
+    parser.add_argument("--shield-delta", type=int, default=None, help="v2 mps filter: policy steps of lookahead (default 1)")
+    parser.add_argument("--shield-rule", choices=("mps", "improve"), default="mps",
+                        help="v2 mps filter: improve also needs Q(o,0) - Q(o,DELTA_MAX) > --shield-eps to switch")
+    parser.add_argument("--shield-eps", type=float, default=0.05)
+    parser.add_argument("--push-duration", type=float, default=0.2, help="s; the force is mass x kick / duration")
+    parser.add_argument("--push-down", type=float, default=0.0, help="downward force, times the horizontal one")
+    parser.add_argument("--push-lever", type=float, default=0.0, help="m, the force applied that far ahead/behind the base")
     parser.add_argument("--no-rviz", action="store_true")
     parser.add_argument("--gui", action="store_true", help="Gazebo GUI")
     args = parser.parse_args()
@@ -223,6 +242,20 @@ if __name__ == '__main__':
         dm.value_function = vfm.ValueFunctionManager(
             robot_name=args.robot, model_path=None if args.filter == "default" else args.filter, threshold=args.threshold,
             margin=args.margin, min_switch=args.min_switch, min_back=np.inf if args.no_switch_back else 200)
+    dm.v2 = args.v2 or args.shield is not None
+    dm.push_profile = {"duration": args.push_duration, "down": args.push_down, "lever": args.push_lever}
+    if args.shield is not None:
+        from base_controllers.components.safe_rl.v2.shield import Shield
+        dm.shield = Shield(args.shield, threshold=args.shield_threshold, delta=args.shield_delta, rule=args.shield_rule,
+                           eps=args.shield_eps)
+        print(f"v2 shield {args.shield}: {dm.shield.method}, threshold {dm.shield.threshold}, delta {dm.shield.delta}, "
+              f"rule {dm.shield.rule} (eps {dm.shield.eps})")
+    if args.watch:
+        from base_controllers.components.safe_rl.value_function import value_function_manager as vfm
+        # named VF_<name>_<robot>.onnx: logged as <name>; each keeps its decision once it switched
+        dm.watch = [(os.path.basename(m)[3:-len(f"_{args.robot}.onnx")] if os.path.basename(m).startswith("VF_")
+                     else os.path.splitext(os.path.basename(m))[0],
+                     vfm.ValueFunctionManager(robot_name=args.robot, model_path=m, min_back=np.inf)) for m in args.watch]
 
     try:
         # rl_flat.world, as the RL controller (rl_quadruped) runs the policy: no 1 mm contact

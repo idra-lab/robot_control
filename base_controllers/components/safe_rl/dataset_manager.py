@@ -32,6 +32,10 @@ EPISODE_COLUMNS = ("episode", "method", "cmd_vx", "cmd_vy", "cmd_wz", "push_time
                    "n_samples", "row", "discarded")
 
 
+# v2 records, per inference (DatasetManager._on_observation)
+V2_META = ("t", "safe", "fallen", "static", "polygon", "zeta", "l", "terminal")
+
+
 class DatasetManager():
     def __init__(self, quadruped=None):
 
@@ -161,8 +165,27 @@ class DatasetManager():
         self.value_function = None
         self.vf_rate = 100.0
         self.vf_from = 1.0
+        # value functions watched alongside, none of them acting: (name, ValueFunctionManager) each
+        # evaluated with the filter, its value and the decision its own rule would take logged per
+        # tick (the _vf_trace.npz next to the dataset), to compare them on the same trajectories
+        self.watch = []
         self.episode = {}
         self._frames = None
+        # v2 (components/safe_rl/v2): the policy's own observation, recorded and filtered at every
+        # inference through VelocityPolicy.on_observation, so a switch acts on that very policy step.
+        # Per inference the record holds the observation and (t from the push start, safe policy
+        # acting, I_fall, static, polygon, zeta, l); a last row, terminal = 1, carries the episode's
+        # final flags.  The handover (mps data, or the safe policy alone with backup_delay) happens at
+        # the first inference at or after its time.  shield: None or a v2 Shield acting from vf_from.
+        self.v2 = False
+        self.shield = None
+        self.v2_records = {}
+        # The push of the episode: a force of mass x kick / duration for duration s, horizontal in
+        # a random direction; down, a downward force of that many times the horizontal one on top;
+        # lever, m: the force applied that far ahead of or behind the base origin (random side),
+        # i.e. a torque r x F on the base as well.  The training pushes are duration 0.2, down 0,
+        # lever 0; the test families of v2/run_v2.sh change one each.
+        self.push_profile = {"duration": 0.2, "down": 0.0, "lever": 0.0}
 
     # -------------------------------
     # Capture Point Computation
@@ -421,6 +444,32 @@ class DatasetManager():
             return np.random.normal(0, self.noise_level, size=12)
         return np.zeros(12)
 
+    def _v2_record(self, obs, terminal=0.0):
+        now = float(np.ravel(self.quadruped.time)[0])
+        zeta, l = self.ra_margins()
+        self._v2_obs.append(np.array(obs, dtype=np.float32))
+        self._v2_meta.append((now - self.episode["push_time"], float(self._active == "safe"), float(self.fallen_flag),
+                              float(self.static_flag), float(self.polygon_flag), zeta, l, terminal))
+
+    def _on_observation(self, obs):
+        """v2: VelocityPolicy's hook, at every inference before the network runs: the scheduled
+        handover or the shield's decision, then the record of this observation as the acting policy
+        sees it (command block zero once the safe policy acts)."""
+        now = float(np.ravel(self.quadruped.time)[0])
+        switch = None
+        if self._active == "nominal":
+            if now >= self._handover_time - 1e-6:
+                switch = True
+            elif self.shield is not None and now >= self.vf_from - 1e-6 and not self.shield.walk(obs):
+                switch = True
+            if switch:
+                self._active = "safe"
+                self.episode["switch_time"] = now - self.episode["push_time"]
+                obs[self._cmd_slice] = 0.0
+        if now >= self.vf_from - 1e-6:
+            self._v2_record(obs)
+        return ("safe", np.zeros(3)) if switch else None
+
     # -------------------------------
     # Main Function: Single Simulation Episode
     # -------------------------------
@@ -457,6 +506,8 @@ class DatasetManager():
         kick_dir = np.random.uniform(-np.pi, np.pi)  # base frame, 0 forward, pi/2 left
         walk_switch = np.random.uniform() < self.walk_switch_share
         warm_up = np.random.uniform(*self.switch_window)
+        self._lever_ahead = np.random.uniform() < 0.5
+        self.push_duration = self.push_profile["duration"]
         self.warmup_time = push_time
         self.capture_from = push_time + self.push_duration
         if self.method == "mps":
@@ -491,6 +542,18 @@ class DatasetManager():
         self.vis_every = int(round(1.0 / (30 * robot.dt)))
         if self.value_function is not None:
             self.value_function.reset()
+        for _, manager in self.watch:
+            manager.reset()
+        self.trace = []
+        if self.v2:
+            policy = actor_network.policy
+            policy.on_observation = self._on_observation
+            self._cmd_slice = policy._cmd_slice
+            self._active = "nominal"
+            self._handover_time = backup_time
+            self._v2_obs, self._v2_meta = [], []
+            if self.shield is not None:
+                self.shield.reset()
         self._noise_std = self.noise_level * self.torque_limits()
         noise = np.random.normal(0, self._noise_std) if self.noise_model == "ou" else np.zeros(12)
 
@@ -511,8 +574,17 @@ class DatasetManager():
 
             if self.step == push_step and kick > 0:
                 yaw = robot.basePoseW[5]
-                force = robot.robot.robotMass * kick / self.push_duration
-                robot.push(force * np.array([np.cos(yaw + kick_dir), np.sin(yaw + kick_dir)]), self.push_duration)
+                profile = self.push_profile
+                duration = profile["duration"]
+                force = robot.robot.robotMass * kick / duration
+                force_w = force * np.array([np.cos(yaw + kick_dir), np.sin(yaw + kick_dir), -profile["down"]])
+                torque_w = None
+                if profile["lever"] > 0:
+                    # the force applied lever m ahead of or behind the base origin, along the trunk
+                    side = 1.0 if self._lever_ahead else -1.0
+                    r_w = side * profile["lever"] * np.array([np.cos(yaw), np.sin(yaw), 0.0])
+                    torque_w = np.cross(r_w, force_w)
+                robot.push(force_w, duration, torque=torque_w)
                 self.episode["base_vel"] = (robot.b_R_w @ robot.baseTwistW[:3])[:2]
                 print(f"Pushing robot at {push_time} s: {force:.0f} N for {self.push_duration} s")
 
@@ -529,8 +601,17 @@ class DatasetManager():
                 nominal, _ = self.value_function.computeValueFnc(proj_gravity, ang_vel_b, robot.q, robot.qd)
                 if not nominal and np.isnan(self.episode["switch_time"]):
                     self.episode["switch_time"] = float(np.ravel(robot.time)[0]) - push_time
+            if self.watch and robot.time >= self.vf_from and self.step % vf_every == 0:
+                # the policy acting at this tick, then per watched value function V and its rule's
+                # decision (1: the walking policy may run)
+                row = [float(np.ravel(robot.time)[0]) - push_time, float(not (robot.time < backup_time and nominal))]
+                for _, manager in self.watch:
+                    walk, value = manager.computeValueFnc(proj_gravity, ang_vel_b, robot.q, robot.qd)
+                    row += [value, float(walk)]
+                self.trace.append(row)
 
-            if robot.time < backup_time and nominal:  # nominal policy
+            walking = (self._active == "nominal") if self.v2 else (robot.time < backup_time and nominal)
+            if walking:  # nominal policy
                 if np.mod(robot.time, 0.5) == 0:
                     print(colored(f"TIME: {robot.time}", "blue"))
                 actor_network.velocity_cmd = cmd
@@ -567,6 +648,10 @@ class DatasetManager():
 
         self.episode["ticks"] = self.step + 1
         self.episode["final_height"] = float(robot.basePoseW[2])
+        if self.v2:
+            # the end of the episode, with its final flags (the observation is the last inference's)
+            self._v2_record(actor_network.policy._obs_flat, terminal=1.0)
+            actor_network.policy.on_observation = None
         return np.array(self.observations), self.fallen_flag, self.capture_flag, self.survived_flag
 
     # -------------------------------
@@ -579,6 +664,8 @@ class DatasetManager():
         all_ra = []
         stats = []
         episodes = []  # one row per episode, saved next to the dataset
+        traces = []  # the watched value functions, per tick: episode, then the row of the episode loop
+        self.v2_records = {}
         max_len = 0
 
         print("Running batch simulations...")
@@ -628,6 +715,10 @@ class DatasetManager():
                                             "final_height", "cp_hold_max", "static_time", "min_hip", "min_knee",
                                             "fall_rule", "paper_fall", "knee_contact", "jl_pos", "jl_vel"))
             episodes.append(row)
+            traces += [[i] + r for r in self.trace]
+            if self.v2 and self._v2_meta:
+                self.v2_records[i] = (np.array(self._v2_obs, dtype=np.float32),
+                                      np.array(self._v2_meta, dtype=np.float32))
             if ep["fell_before_push"] or not len(obs):
                 row.update(row=-1, discarded=2)
                 continue
@@ -652,6 +743,15 @@ class DatasetManager():
             max_len = max(max_len, len(obs))
             stats.append((fallen, captured, survived, len(obs)))
 
+        if self.v2:
+            # every episode's records, discarded ones included (the episodes CSV says which to use):
+            # obs (n x 228), meta (n x 8, V2_META), episode (n,) its index in the batch
+            ids = sorted(self.v2_records)
+            np.savez_compressed(os.path.join(save_path, "v2_dataset.npz"),
+                                obs=np.concatenate([self.v2_records[i][0] for i in ids]) if ids else np.zeros((0, 0)),
+                                meta=np.concatenate([self.v2_records[i][1] for i in ids]) if ids else np.zeros((0, 8)),
+                                episode=np.concatenate([np.full(len(self.v2_records[i][1]), i) for i in ids])
+                                if ids else np.zeros(0), columns=np.array(V2_META))
         if not all_obs:
             print(colored("No episode kept, nothing saved", "red"))
             return
@@ -689,6 +789,18 @@ class DatasetManager():
         np.savetxt(os.path.join(save_path, "observations_dataset_abs_test_episodes.csv"),
                    np.array([[float(row[c]) for c in EPISODE_COLUMNS] for row in episodes], dtype=float),
                    delimiter=",", fmt="%.6g", comments="", header=",".join(EPISODE_COLUMNS))
+
+        if self.watch:
+            # per tick (vf_rate Hz, from vf_from s): episode, t (s after the push start), safe (1: the
+            # safe policy acting), then per watched value function V_<name> and walk_<name> (its rule
+            # would keep the walking policy); with each one's threshold, margin and min_switch
+            names = [name for name, _ in self.watch]
+            np.savez(os.path.join(save_path, "observations_dataset_abs_test_vf_trace.npz"),
+                     data=np.array(traces, dtype=np.float32).reshape(-1, 3 + 2 * len(names)),
+                     columns=np.array(["episode", "t", "safe"] + [f"{k}_{n}" for n in names for k in ("V", "walk")]),
+                     names=np.array(names), threshold=np.array([m.threshold for _, m in self.watch]),
+                     margin=np.array([m.margin for _, m in self.watch]),
+                     min_switch=np.array([m.min_switch for _, m in self.watch]))
 
         codes = np.array([row["discarded"] for row in episodes])
         print(f"Discarded: joint range {np.sum(codes == 1)}, fell before the push {np.sum(codes == 2)}, "
