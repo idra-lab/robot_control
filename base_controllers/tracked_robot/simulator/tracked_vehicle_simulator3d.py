@@ -508,8 +508,10 @@ class TrackedVehicleSimulator3D:
                 #base_x_axis = self.math_utils.eul2Rot(self.pose[3:])[:, 0]
                 w_com_height_vector = self.w_R_b[:, 2] * self.vehicle_param.height
                 pcom_on_ground = self.pose[:3] - self.consider_robot_height * w_com_height_vector
-                pg, terrain_roll, terrain_pitch, terrain_yaw = self.terrain_manager.project_on_mesh(point=pcom_on_ground[:2],  direction=np.array([0., 0., 1.]))
-                self.pose_des,terrain_roll_des,terrain_pitch_des, terrain_yaw_des = self.terrain_manager.project_on_mesh(point=np.array([des_x, des_y]), direction=np.array([0., 0., 1.]))
+                # terrain yaw is determined by the robot orientation!
+                terrain_yaw = self.pose[5]
+                pg, terrain_roll, terrain_pitch = self.terrain_manager.project_on_mesh(point=pcom_on_ground[:2],  direction=np.array([0., 0., 1.]), base_yaw=terrain_yaw)
+                self.pose_des,terrain_roll_des,terrain_pitch_des = self.terrain_manager.project_on_mesh(point=np.array([des_x, des_y]), direction=np.array([0., 0., 1.]), base_yaw=terrain_yaw)
                 self.orient_des = np.array([0, 0, des_theta]) #first two elements are the expected values of b_eox, b_eoy
                 # print("pose ", self.pose[:3])
                 # print("pg ", pg)
@@ -668,7 +670,8 @@ if __name__ == '__main__':
 
     if p.USE_MESH:
         #start the robot on the mesh
-        start_position, start_roll, start_pitch, start_yaw = p.terrain_manager.project_on_mesh(point=p.pose_init[:2], direction=np.array([0., 0., 1.]))
+        start_yaw = p.pose_init[5]
+        start_position, start_roll, start_pitch = p.terrain_manager.project_on_mesh(point=p.pose_init[:2], direction=np.array([0., 0., 1.]), base_yaw=start_yaw)
         p.pose_init[:3] = start_position.copy()
         p.pose_init[3] = start_roll
         p.pose_init[4] = start_pitch

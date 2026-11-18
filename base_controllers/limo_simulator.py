@@ -38,6 +38,9 @@ from gazebo_msgs.msg import ModelState
 from gazebo_msgs.srv import SetModelStateRequest
 from geometry_msgs.msg import Twist
 from base_controllers.utils.communication_utils import getInitialStateFromOdom, getInitialStateFromJoints
+from tf.transformations import quaternion_from_euler
+import math
+import time
 robotName = "limo0" # needs to inherit BaseController
 
 class GenericSimulator(BaseController):
@@ -46,10 +49,10 @@ class GenericSimulator(BaseController):
         self.torque_control = False
         print("Initialized limo controller---------------------------------------------------------------")
 
-        self.ControlType = 'CLOSED_LOOP_UNICYCLE' #'OPEN_LOOP' 'CLOSED_LOOP_UNICYCLE' 'CLOSED_LOOP_SLIP_0' 'CLOSED_LOOP_SLIP'
-        self.SIDE_SLIP_COMPENSATION = 'NONE' # 'MACHINE_LEARNING', 'NONE', 'EXP(not used)'
-        self.LONG_SLIP_COMPENSATION = 'NONE' # 'MACHINE_LEARNING', 'NONE', 'EXP(not used)'
-        self.SLIPPAGE_INFERENCE_TYPE = 'none'  # 'decision_trees','interpolator' , 'NN', 'none'
+        self.ControlType = 'CLOSED_LOOP_SLIP_0' #'OPEN_LOOP' 'CLOSED_LOOP_UNICYCLE' 'CLOSED_LOOP_SLIP_0' 'CLOSED_LOOP_SLIP'
+        self.SIDE_SLIP_COMPENSATION = 'MACHINE_LEARNING' # 'MACHINE_LEARNING', 'NONE', 'EXP(not used)'
+        self.LONG_SLIP_COMPENSATION = 'MACHINE_LEARNING' # 'MACHINE_LEARNING', 'NONE', 'EXP(not used)'
+        self.SLIPPAGE_INFERENCE_TYPE = 'decision_trees'  # 'decision_trees','interpolator' , 'NN', 'none'
         self.ESTIMATE_ALPHA_WITH_ACTUAL_VALUES = True # makes difference for v >= 0.4
 
         self.ODOMETRY = 'true' #'true',  'false' (optitrack node)
@@ -65,6 +68,12 @@ class GenericSimulator(BaseController):
         # initial pose (sim)
         self.p0 = np.array([0., 0., 0.])
         self.SAVE_BAGS = False
+
+        # terrain (sim only)
+        self.TERRAIN = True  # True: slopes, False: flat terrain
+        self.TERRAIN_TYPE = 'mesh'  # 'ramp': inclined plane (pitch about world Y), 'mesh': tractor_description/meshes/terrain.stl
+        self.RAMP_INCLINATION = -0.2  # [rad] used only for TERRAIN_TYPE = 'ramp' (negative: robot with yaw = 0 climbs up)
+        self.RAMP_SIZE = 100.  # [m] must match the box in tractor_description/robots/ramp.urdf.xacro
 
 
 
@@ -218,10 +227,82 @@ class GenericSimulator(BaseController):
             super().logData()
 
 
+    def initTerrain(self):
+        # builds an open3d model of the terrain spawned in gazebo, used to place the robot consistently with the terrain
+        from base_controllers.tracked_robot.simulator.terrain_manager import TerrainManager, create_ramp_mesh
+        if self.TERRAIN_TYPE == 'ramp':
+            # the ramp surface passes through the origin (gazebo is launched without ground plane, so it can go below z = 0)
+            ramp_mesh = create_ramp_mesh(length=self.RAMP_SIZE, width=self.RAMP_SIZE, inclination=self.RAMP_INCLINATION)
+            self.terrainManager = TerrainManager()
+            self.terrainManager.set_mesh(ramp_mesh)
+        elif self.TERRAIN_TYPE == 'mesh':
+            self.terrainManager = TerrainManager(rospkg.RosPack().get_path('tractor_description') + "/meshes/terrain.stl")
+        else:
+            print(colored(f"Unknown TERRAIN_TYPE {self.TERRAIN_TYPE}, can be 'ramp' or 'mesh'", "red"))
+            sys.exit()
+
+    def projectOnTerrain(self, xy, yaw):
+        # returns the point on the terrain below xy and the roll/pitch (ZYX euler) of a robot with heading yaw lying on it
+        return self.terrainManager.project_on_mesh(point=np.asarray(xy), direction=np.array([0., 0., 1.]), base_yaw=yaw)
+
+    def getTerrainConsistentPose(self, clearance=0.05):
+        # pose [x y z roll pitch yaw] of the robot placed on the terrain at p0, lifted by clearance along the terrain normal
+        point, roll, pitch = self.projectOnTerrain(self.p0[:2], self.p0[2])
+        w_R_terr = self.math_utils.eul2Rot(np.array([roll, pitch, self.p0[2]]))
+        position = point + clearance * w_R_terr[:, 2]
+        return np.concatenate((position, np.array([roll, pitch, self.p0[2]])))
+
+    def spawnTerrain(self):
+        from gazebo_msgs.srv import SetModelState, GetWorldProperties
+        if self.TERRAIN_TYPE == 'ramp':
+            # the box is 0.1 thick: shift it along the normal such that its top surface matches the ramp mesh
+            normal = np.array([np.sin(self.RAMP_INCLINATION), 0., np.cos(self.RAMP_INCLINATION)])
+            spawn_pos = -0.05 * normal
+            spawnModel("tractor_description", "ramp", spawn_pos=spawn_pos, spawn_orient=np.array([0., self.RAMP_INCLINATION, 0.]))
+            model_name = 'ramp'
+        else:
+            spawnModel("tractor_description", "terrain", spawn_pos=np.array([0., 0., 0.]))
+            model_name = 'terrain'
+        # wait for the terrain to be in gazebo
+        ros.wait_for_service('/gazebo/get_world_properties')
+        get_world_properties = ros.ServiceProxy('/gazebo/get_world_properties', GetWorldProperties)
+        for _ in range(100):
+            if model_name in get_world_properties().model_names:
+                break
+            time.sleep(0.1)
+        else:
+            print(colored(f"Terrain model {model_name} has not been spawned in gazebo", "red"))
+        # the robot is spawned by the launch file possibly before the terrain is there, then reset it on the terrain
+        ros.wait_for_service('/gazebo/set_model_state')
+        self.set_state = ros.ServiceProxy('/gazebo/set_model_state', SetModelState)
+        quaternion = quaternion_from_euler(self.terrain_consistent_pose_init[3], self.terrain_consistent_pose_init[4], self.terrain_consistent_pose_init[5])
+        self.setModelState(self.robot_name, self.terrain_consistent_pose_init[:3], quaternion)
+        print(colored(f"Robot placed on {model_name} at pose {self.terrain_consistent_pose_init}", "blue"))
+
+    def publishTerrain(self):
+        # show terrain in rviz
+        if self.TERRAIN_TYPE == 'ramp':
+            # the plane marker is 0.1 thick: shift it along the normal such that its top surface matches the ramp
+            normal = np.array([np.sin(self.RAMP_INCLINATION), 0., np.cos(self.RAMP_INCLINATION)])
+            self.ros_pub.add_plane(pos=-0.05 * normal, orient=np.array([0., self.RAMP_INCLINATION, 0.]), color="white", alpha=0.5)
+        else:
+            self.ros_pub.add_mesh("tractor_description", "/meshes/terrain.stl", position=np.array([0., 0., 0.]), color="red", alpha=1.0)
+
     def startFramework(self):
         self.decimate_publish = 1
         world_name = None #'ramps.world'
         additional_args = ['spawn_x:=' + str(p.p0[0]),'spawn_y:=' + str(p.p0[1]),'spawn_Y:=' + str(p.p0[2]),'sensors:='+self.SENSORS, 'odometry:='+self.ODOMETRY]
+        if self.TERRAIN and self.real_robot:
+            print(colored("TERRAIN is available only in simulation, disabling it", "red"))
+            self.TERRAIN = False
+        if self.TERRAIN:
+            # no ground plane at z = 0, otherwise the robot cannot go in the valleys of the terrain (z < 0)
+            world_name = 'empty_no_ground.world'
+            self.initTerrain()
+            self.terrain_consistent_pose_init = self.getTerrainConsistentPose()
+            additional_args += ['spawn_z:=' + str(self.terrain_consistent_pose_init[2]),
+                                'spawn_R:=' + str(self.terrain_consistent_pose_init[3]),
+                                'spawn_P:=' + str(self.terrain_consistent_pose_init[4])]
         launch_file = rospkg.RosPack().get_path('limo_description') + '/launch/start_robot.launch'
         if self.real_robot:
             user = os.popen('whoami').read().strip()
@@ -229,6 +310,8 @@ class GenericSimulator(BaseController):
                 print(colored("HOSTCOMPUTER DOCKER USER SHOULD BE  ROOT to run on real robot","red"))
                 sys.exit()
         super().startSimulator(world_name=world_name, launch_file=launch_file, additional_args=additional_args)
+        if self.TERRAIN:
+            self.spawnTerrain()
 
     def loadModelAndPublishers(self):
         super().loadModelAndPublishers()
@@ -450,6 +533,10 @@ class GenericSimulator(BaseController):
         return qd_des
 
     def publishControlCommand(self, v_des,omega_des):
+        #publish world = map to see propetly the mesh in rviz
+        self.broadcaster.sendTransform(np.zeros(3),
+                                       quaternion_from_euler(0, 0., 0.),
+                                       ros.Time.now(), '/map', '/world')
         msg = Twist()
         msg.linear.x = v_des
         msg.angular.z = omega_des
@@ -626,7 +713,7 @@ class GenericSimulator(BaseController):
         return v_des_comp , omega_des_comp, beta_l, beta_r
     
     def monitor_time(self):
-        self.checkLoopFrequency()
+        #self.checkLoopFrequency()
         if np.mod(self.time,1) == 0:
             print(colored(f"TIME: {self.time}","red"))
 
@@ -694,7 +781,7 @@ def main_loop(p):
         p.des_y = p.p0[1]  # +0.1
         p.des_theta = p.p0[2]  # +0.1
         p.traj = Trajectory(ModelsList.UNICYCLE, p.des_x, p.des_y, p.des_theta, DT=conf.robot_params[p.robot_name]['dt'], v=v_ol, omega=omega_ol)
-
+        #p.setSimSpeed(max_update_rate=500)
         while not ros.is_shutdown(): #TODO
             if p.IDENT_TYPE == 'WHEELS':
                 if counter>=traj_length:
@@ -718,6 +805,8 @@ def main_loop(p):
             #note there is only a ros_impedance controller, not a joint_group_vel controller, so I can only set velocity by integrating the wheel speed and
             #senting it to be tracked from the impedance loop
             p.monitor_time()
+            if p.TERRAIN:
+                p.publishTerrain()
             p.ros_pub.publishVisual(delete_markers=False)
             p.beta_l, p.beta_r, p.alpha, p.radius, p.b_base_vel = p.estimateSlippages(p.baseTwistW, p.basePoseW[p.u.sp_crd["AZ"]], p.qd)
 
@@ -742,17 +831,26 @@ def main_loop(p):
                             v=v_ol, omega=omega_ol, v_dot=v_dot_ol, omega_dot=omega_dot_ol)
 
         # Lyapunov controller parameters
-        params = LyapunovParams(K_P=1., K_THETA=1., DT=conf.robot_params[p.robot_name]['dt'], ESTIMATE_ALPHA_WITH_ACTUAL_VALUES=p.ESTIMATE_ALPHA_WITH_ACTUAL_VALUES) #high gains 15 5 / low gains 10 1 (default)
+        params = LyapunovParams(K_P=2., K_THETA=1., DT=conf.robot_params[p.robot_name]['dt'], ESTIMATE_ALPHA_WITH_ACTUAL_VALUES=p.ESTIMATE_ALPHA_WITH_ACTUAL_VALUES) #high gains 15 5 / low gains 10 1 (default)
         p.controller = LyapunovController(params=params, robot_constants=robot_constants)#, matlab_engine = p.eng)
         p.controller.setSideSlipCompensationType(p.SIDE_SLIP_COMPENSATION)
         p.controller.setSlippageInferenceType(p.SLIPPAGE_INFERENCE_TYPE)
         p.traj.set_initial_time(start_time=p.time)
         while not ros.is_shutdown():
-            # update kinematics
-            robot_state.x = p.basePoseW[p.u.sp_crd["LX"]]
-            robot_state.y = p.basePoseW[p.u.sp_crd["LY"]]
-            robot_state.theta = p.basePoseW[p.u.sp_crd["AZ"]]
-            #print(f"pos X: {robot.x} Y: {robot.y} th: {robot.theta}")
+
+            if p.TERRAIN != 'none':
+                robot_state.x = p.basePoseW[p.u.sp_crd["LX"]]
+                robot_state.y = p.basePoseW[p.u.sp_crd["LY"]]
+                robot_state.z = p.basePoseW[p.u.sp_crd["LY"]]
+                robot_state.roll = p.basePoseW[p.u.sp_crd["AX"]]
+                robot_state.pitch = p.basePoseW[p.u.sp_crd["AY"]]
+                robot_state.theta = p.basePoseW[p.u.sp_crd["AZ"]]
+            else:
+                # update kinematics
+                robot_state.x = p.basePoseW[p.u.sp_crd["LX"]]
+                robot_state.y = p.basePoseW[p.u.sp_crd["LY"]]
+                robot_state.theta = p.basePoseW[p.u.sp_crd["AZ"]]
+                #print(f"pos X: {robot.x} Y: {robot.y} th: {robot.theta}")
             # controllers
 
             p.des_x, p.des_y, p.des_theta, p.v_d, p.omega_d, p.v_dot_d, p.omega_dot_d, traj_finished = p.traj.evalTraj(p.time)
@@ -791,6 +889,8 @@ def main_loop(p):
             p.qd_des = p.mapToWheels(p.ctrl_v, p.ctrl_omega)
             p.q_des = p.q_des + p.qd_des * conf.robot_params[p.robot_name]['dt']
             p.monitor_time()
+            if p.TERRAIN:
+                p.publishTerrain()
             p.ros_pub.publishVisual(delete_markers=False)
             p.beta_l, p.beta_r, p.alpha, p.radius, p.b_base_vel = p.estimateSlippages(p.baseTwistW,p.basePoseW[p.u.sp_crd["AZ"]], p.qd)
 
@@ -820,10 +920,13 @@ def main_loop(p):
             "beta_r": p.beta_r_log[not_nans],
             "alpha": p.alpha_log[not_nans]})
 
+        terrain_tag = ''
+        if p.TERRAIN:
+            terrain_tag = f'_ramp_{p.RAMP_INCLINATION}' if p.TERRAIN_TYPE == 'ramp' else '_mesh'
         if p.IDENT_TYPE =='WHEELS':
-            output_file = os.environ['LOCOSIM_DIR'] + f'/robot_control/base_controllers/tracked_robot/regressor/limo/ident_wheels_wheelL_{p.IDENT_WHEEL_L}.csv'
+            output_file = os.environ['LOCOSIM_DIR'] + f'/robot_control/base_controllers/tracked_robot/regressor/limo/ident_wheels{terrain_tag}_wheelL_{p.IDENT_WHEEL_L}.csv'
         if p.IDENT_TYPE == 'V_OMEGA':
-            output_file = os.environ['LOCOSIM_DIR'] + f'/robot_control/base_controllers/tracked_robot/regressor/limo/ident_vomega_longv_{p.IDENT_LONG_SPEED}_{p.IDENT_DIRECTION}.csv'
+            output_file = os.environ['LOCOSIM_DIR'] + f'/robot_control/base_controllers/tracked_robot/regressor/limo/ident_vomega{terrain_tag}_longv_{p.IDENT_LONG_SPEED}_{p.IDENT_DIRECTION}.csv'
 
         output_dir = os.path.dirname(output_file)
         #creates all missing directories in the path (and won’t complain if they already exist).

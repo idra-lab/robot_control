@@ -71,7 +71,7 @@ robot_params['limo0'] ={'dt': 0.01,
                         'ee_frames': ['limo0/front_left_wheel_link', 'limo0/front_right_wheel_link'],
                         'spawn_x': -0.,
                         'spawn_y': 0.0,
-                        'spawn_z': 0.5,
+                        'spawn_z': 0.2,
                         'spawn_Y': 0.,
                         'real_robot': False,
                         'buffer_size': 15000}
