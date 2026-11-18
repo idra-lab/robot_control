@@ -22,15 +22,17 @@ from the floor to walking and back::
 * RL runs the walking policy at 50 Hz on the 500 Hz loop; SAFE_STOP runs the ``safe`` variant
   (trained at zero command) on the same observation history, so the hand-over works mid-stride.
 * DAMPING (kp = 0) lets the robot sink under its own weight, from any state.
-* With --safety-filter (off by default), RL hands over to SAFE_STOP by itself when the value
-  function (components/safe_rl) says the safe policy could soon no longer bring the robot to rest
-  (V below threshold plus margin), and back to RL, at zero command, once V has recovered.  A safe
-  stop the operator asked for stays until the operator ends it.
+* With --safety-filter mps|abs (off by default), RL hands over to SAFE_STOP by itself, the v2
+  safety filter (components/safe_rl/v2/shield.py) deciding on the policy's own observation at every
+  inference, before the network runs, so the safe policy acts on that very step.  mps: Q(o, 1), the
+  chance that the safe policy recovers if the walking policy acts one more step, walking while
+  Q >= 0.9; abs: ABS's reach-avoid value of the walking policy, walking while -V_RA >= 0.05.  As in
+  the study, the safe policy keeps the robot once switched, until the operator resumes walking.
 
-    python3 rl_quadruped_controller.py --robot go2                 # gazebo, keyboard
-    python3 rl_quadruped_controller.py --robot go2 --safety-filter # gazebo, with the safety filter
-    ./run_rl_controller.sh --robot go2 --real --input joy          # real robot
-    ./run_rl_controller.sh --robot go2 --real --input joy --safety-filter
+    python3 rl_quadruped_controller.py --robot go2                     # gazebo, keyboard
+    python3 rl_quadruped_controller.py --robot go2 --safety-filter mps # gazebo, with the safety filter
+    ./run_rl_controller.sh --robot go2 --real --input joy              # real robot
+    ./run_rl_controller.sh --robot go2 --real --input joy --safety-filter abs
 """
 
 import os
@@ -96,13 +98,10 @@ STATS_RATE = 10.0               # Hz, loop timing
 SCHED_FIFO_PRIORITY = 80
 GC_THRESHOLDS = (2000, 10)      # gen0, gen1; the full collection runs only at resting states
 
-# safety filter (--safety-filter, components/safe_rl/README.md): V at FILTER_RATE from
-# FILTER_START_DELAY s after the walking policy starts, as it was tested (the value function never
-# saw the gait start).  After the filter hands the robot back to the walking policy it keeps
-# checking: ignoring V for a recovery time (the paper's robot experiments, Sec. III-D) would leave
-# the walking policy unshielded; V staying above the level for 2 s before handing back is what keeps
-# the switch from chattering.
-FILTER_RATE = 100.0             # Hz
+# safety filter (--safety-filter mps|abs, components/safe_rl/v2): evaluated at every inference
+# (50 Hz) from FILTER_START_DELAY s after the walking policy starts (the value functions never saw
+# the gait start, nor the history seeded by a reset).
+FILTER_METHODS = ("mps", "abs")
 FILTER_START_DELAY = 1.0        # s
 
 # _checkActuation
@@ -140,8 +139,8 @@ class RlQuadrupedController(BaseController):
 
     def __init__(self, robot_name="aliengo", input_device="keyboard", real_robot=False,
                  realtime=None, telemetry=None, skip_calibration=None, use_rviz=None,
-                 network_interface=None, safety_filter=False, filter_threshold=None,
-                 filter_model=None, filter_margin=None):
+                 network_interface=None, safety_filter=None, filter_threshold=None,
+                 filter_model=None):
         self.cfg = get_config(robot_name, real_robot=real_robot)
         super(RlQuadrupedController, self).__init__(robot_name, external_conf=conf,
                                                    broadcast_world=False)
@@ -158,11 +157,12 @@ class RlQuadrupedController(BaseController):
         self.skip_calibration = pick(skip_calibration, "skip_calibration")
         self.use_rviz = pick(use_rviz, "use_rviz")
         self.network_interface = pick(network_interface, "network_interface")
-        # the safety filter's ValueFunctionManager, None when off
-        self.use_safety_filter = safety_filter
+        # the safety filter: its method (mps, abs or None for off) and, once loaded, its v2 Shield
+        if safety_filter not in (None, *FILTER_METHODS):
+            raise ValueError(f"safety_filter must be one of {FILTER_METHODS} or None, not {safety_filter!r}")
+        self.filter_method = safety_filter
         self.filter_threshold = filter_threshold
         self.filter_model = filter_model
-        self.filter_margin = filter_margin
         self.safety_filter = None
 
         self.state = State.INIT
@@ -225,7 +225,7 @@ class RlQuadrupedController(BaseController):
                              f"(have {self.policy.variants})")
         self.kp_rl = np.full(self.robot.na, self.policy.kp)
         self.kd_rl = np.full(self.robot.na, self.policy.kd)
-        if self.use_safety_filter:
+        if self.filter_method is not None:
             self._initSafetyFilter()
 
         self.initVars()
@@ -321,9 +321,9 @@ class RlQuadrupedController(BaseController):
         self.velocity_cmd = np.zeros(3)
         self.rl_action = np.zeros(na)
         self.filter_value = np.nan
-        self._filter_walk = True
+        self._filter_switch = False      # the filter handed over at the last inference
         self._filter_backup = False      # SAFE_STOP entered by the safety filter, not the operator
-        self._filter_from = 0.0
+        self._filter_from = np.inf
 
         self.imu_utils = IMU_utils(timeout=int(round(self.cfg["calibration_duration"] / self.dt)),
                                    dt=self.dt)
@@ -939,73 +939,81 @@ class RlQuadrupedController(BaseController):
 
     def _rl(self):
         if self.state_first_tick:
-            back_from_filter = self._filter_backup and self.prev_state is State.SAFE_STOP
             self._enterPolicy(self.policy.default_variant,
                               f"Policy '{self.policy.default_variant}' running: kp={self.policy.kp:.1f} "
-                              f"kd={self.policy.kd:.2f}, {self.policy.policy_rate:.0f} Hz"
-                              + (", the safety filter ended its safe stop" if back_from_filter else ""))
+                              f"kd={self.policy.kd:.2f}, {self.policy.policy_rate:.0f} Hz")
             self._filter_backup = False
-            if not back_from_filter:
-                self._resetSafetyFilter()
+            self._resetSafetyFilter()
         self._stepPolicy(self.command.get_velocity_cmd())
-        if self.state is State.RL and not self._filterSaysWalk():
+        if self._filter_switch and self.state is State.RL:
+            # the safe policy already acted on this inference (_onObservation); the state follows
+            self._filter_switch = False
             self._filter_backup = True
             self.transition(State.SAFE_STOP)
 
     def _safe_stop(self):
-        """Hold station on the zero-command policy.  Leaving is an operator command, or, when the
-        safety filter entered it, the filter's once V has recovered."""
+        """Hold station on the zero-command policy.  Leaving is an operator command, also when the
+        safety filter entered it (the study's protocol: the safe policy keeps the robot)."""
         if self.state_first_tick:
             if self.prev_state is not State.RL:
                 self._filter_backup = False
             if self._filter_backup:
-                announce = (f"SAFE STOP by the safety filter (V {self.filter_value:.2f} below "
-                            f"{self.safety_filter.threshold}): policy '{SAFE_VARIANT}' at zero command, "
-                            f"back to walking once V has recovered.")
+                announce = (f"SAFE STOP by the safety filter ({self.filter_method}: value "
+                            f"{self.filter_value:.3f} below {self.safety_filter.threshold}): policy "
+                            f"'{SAFE_VARIANT}' at zero command. Resume, stand down or emergency damping.")
             else:
                 announce = (f"SAFE STOP: policy '{SAFE_VARIANT}' at zero command. Resume, stand down or "
                             f"emergency damping.")
             self._enterPolicy(SAFE_VARIANT, announce)
         self._stepPolicy(ZERO_COMMAND)
-        if self._filter_backup and self.state is State.SAFE_STOP and self._filterSaysWalk():
-            self.transition(State.RL)
 
     # ---------------------------------------------------------------------------------------------
     # safety filter
     # ---------------------------------------------------------------------------------------------
     def _initSafetyFilter(self):
-        """Load the value function (ONNX, onnxruntime on one thread like the policy) and run it
-        once, so the first evaluation in RL does not stall the loop."""
-        from base_controllers.components.safe_rl.value_function.value_function_manager import (
-            ValueFunctionManager)
-        self.safety_filter = ValueFunctionManager(robot_name=self.robot_name, model_path=self.filter_model,
-                                                  threshold=self.filter_threshold, margin=self.filter_margin)
-        self._filter_decim = max(1, int(round(1.0 / (FILTER_RATE * self.dt))))
-        self.safety_filter.value(np.array([0.0, 0.0, -1.0]), np.zeros(3), np.asarray(self.policy.q_default),
-                                 np.zeros(self.robot.na))
-        print(colored(f"Safety filter on: V below {self.safety_filter.threshold} switches to the "
-                      f"'{SAFE_VARIANT}' policy", "cyan"))
+        """Load the v2 filter (ONNX, onnxruntime on one thread like the policy), hook it into the
+        policy's inference and run it once, so the first evaluation in RL does not stall the loop."""
+        from base_controllers.components.safe_rl.v2.shield import Shield, default_model
+        model = self.filter_model or default_model(self.robot_name, self.filter_method)
+        self.safety_filter = Shield(model, threshold=self.filter_threshold)
+        if self.safety_filter.method != self.filter_method:
+            raise ValueError(f"{model} is a '{self.safety_filter.method}' model, not '{self.filter_method}'")
+        if int(self.safety_filter.info["obs_dim"]) != self.policy.obs_dim:
+            raise ValueError(f"{model} takes {self.safety_filter.info['obs_dim']} observations, the policy "
+                             f"{self.policy.obs_dim}")
+        self.safety_filter.score(np.zeros(self.policy.obs_dim, dtype=np.float32))
+        self.policy.on_observation = self._onObservation
+        print(colored(f"Safety filter on: {self.filter_method} ({os.path.basename(model)}), a value below "
+                      f"{self.safety_filter.threshold} switches to the '{SAFE_VARIANT}' policy", "cyan"))
 
     def _resetSafetyFilter(self):
         """Walking again, from the operator: the filter starts over, FILTER_START_DELAY s from now."""
         if self.safety_filter is not None:
             self.safety_filter.reset()
-            self._filter_walk = True
+            self._filter_switch = False
             self._filter_from = self.time + FILTER_START_DELAY
 
-    def _filterSaysWalk(self):
-        """The safety filter's verdict: True to walk, False for the safe policy (always True when
-        the filter is off).  V is evaluated at FILTER_RATE; the manager switches after one value
-        below the threshold, and back after 2 s above it."""
-        if self.safety_filter is None or self.time < self._filter_from:
-            return True
-        if self.tick_count % self._filter_decim == 0:
-            self._filter_walk, self.filter_value = self.safety_filter.computeValueFnc(
-                self.projected_gravity, self.angVelB, self.q, self.qd)
-            if self.enable_telemetry:
-                self._publishScalar(self.pub_filter_value, self.filter_value)
-                self._publishScalar(self.pub_filter_backup, float(not self._filter_walk))
-        return self._filter_walk
+    def _onObservation(self, obs):
+        """VelocityPolicy's hook, at every inference before the network runs.  In RL, from
+        FILTER_START_DELAY on: the filter's decision on this observation, the safe policy at zero
+        command acting on it at once if the walking policy may not.  In SAFE_STOP the value is only
+        published (on the safe policy's observation, command zero)."""
+        if self.state is State.RL and self.time >= self._filter_from:
+            walk = self.safety_filter.walk(obs)
+            self.filter_value = self.safety_filter.value
+            switch = not walk
+        elif self.state in POLICY_STATES and self.time >= self._filter_from:
+            self.filter_value = self.safety_filter.score(obs)
+            switch = False
+        else:
+            return None
+        if self.enable_telemetry:
+            self._publishScalar(self.pub_filter_value, self.filter_value)
+            self._publishScalar(self.pub_filter_backup, float(switch or self.state is State.SAFE_STOP))
+        if switch:
+            self._filter_switch = True
+            return SAFE_VARIANT, ZERO_COMMAND
+        return None
 
     def _checkSafety(self):
         limit = self.cfg["max_roll_pitch"]
@@ -1217,7 +1225,7 @@ class RlQuadrupedController(BaseController):
         self._msg_scalar = Float64()
 
         if self.safety_filter is not None:
-            # at FILTER_RATE: V and whether the filter wants the safe policy (1)
+            # per inference: the filter's value (mps Q(o, 1), abs -V_RA) and 1 once the safe policy acts
             self.pub_filter_value = publisher("safety_filter/value", Float64)
             self.pub_filter_backup = publisher("safety_filter/backup", Float64)
 
@@ -1315,18 +1323,16 @@ def parse_args(argv=None):
                         help="force the real-time tuning on (default: only with --real)")
     parser.add_argument("--no-realtime", dest="realtime", action="store_false",
                         help="skip the real-time tuning")
-    parser.add_argument("--safety-filter", dest="safety_filter", action="store_true",
-                        help="switch to the safe policy when the value function says the walking "
-                             "policy is about to fall (components/safe_rl); off by default")
+    parser.add_argument("--safety-filter", dest="safety_filter", nargs="?", const="mps", default=None,
+                        choices=FILTER_METHODS,
+                        help="switch to the safe policy when the v2 filter (components/safe_rl/v2) says the "
+                             "walking policy must stop: mps, Q(o, 1) of the study (the default when given "
+                             "without a value), or abs, ABS's reach-avoid value; off by default")
     parser.add_argument("--filter-threshold", dest="filter_threshold", type=float, default=None,
-                        help="the safety filter's threshold on V; default the model's .json")
-    parser.add_argument("--filter-margin", dest="filter_margin", type=float, default=None,
-                        help="the safety filter's margin L, walking while V >= threshold + L; default the "
-                             "model's .json")
+                        help="the filter's threshold, walking while the value is at least this; default the "
+                             "model's .json (mps 0.9, abs 0.05)")
     parser.add_argument("--filter-model", dest="filter_model", default=None, metavar="ONNX",
-                        help="the value function; default "
-                             "components/safe_rl/value_function/models/VF_<DEFAULT_MODEL>_<robot>.onnx: abs (ABS's "
-                             "reach-avoid value) on both robots")
+                        help="the filter's model; default components/safe_rl/v2/filters/VF_<method>_<robot>.onnx")
     return parser.parse_args(argv)
 
 
@@ -1337,7 +1343,7 @@ if __name__ == "__main__":
                               skip_calibration=args.skip_calibration, use_rviz=args.use_rviz,
                               network_interface=args.network_interface,
                               safety_filter=args.safety_filter, filter_threshold=args.filter_threshold,
-                              filter_model=args.filter_model, filter_margin=args.filter_margin)
+                              filter_model=args.filter_model)
     recorder = None
     try:
         p.startController(world_name=args.world,

@@ -161,8 +161,7 @@ def run_trial(args):
 
     controller = RlQuadrupedController(args.robot, input_device="none", skip_calibration=True,
                                        use_rviz=False, realtime=False, safety_filter=args.safety_filter,
-                                       filter_threshold=args.filter_threshold, filter_model=args.filter_model,
-                                       filter_margin=args.filter_margin)
+                                       filter_threshold=args.filter_threshold, filter_model=args.filter_model)
     controller.startController(additional_args=["gui:=false"])
 
     result = {
@@ -250,9 +249,8 @@ def run_trial(args):
             result["max_survived"] = args.force
         if controller.safety_filter is not None:
             result["filter_threshold"] = controller.safety_filter.threshold
-            result["filter_margin"] = controller.safety_filter.margin
-            result["filter_model"] = os.path.basename(controller.safety_filter.model_path)
-            result["filter_switches"] = controller.safety_filter.backup_trigger_counter
+            result["filter_model"] = os.path.basename(controller.filter_model or "default")
+            result["filter_switched"] = not controller.safety_filter.walking
         result["wall_s"] = wall.monotonic() - wall_start
         try:
             result["sim_s"] = sim_now() - sim_start if sim_start is not None else None
@@ -765,11 +763,10 @@ def parse_args(argv=None):
     trial.add_argument("--seed", type=int, default=0, help="seeds the moment of the push")
     trial.add_argument("--repeat", type=int, default=0, help="run index, recorded in the result")
     trial.add_argument("--out", required=True, help="result file (json)")
-    trial.add_argument("--safety-filter", action="store_true",
-                       help="run the controller with its safety filter (--safety-filter)")
+    trial.add_argument("--safety-filter", nargs="?", const="mps", default=None, choices=("mps", "abs"),
+                       help="run the controller with its safety filter (--safety-filter mps|abs)")
     trial.add_argument("--filter-threshold", type=float, default=None, help="default the model's .json")
-    trial.add_argument("--filter-margin", type=float, default=None, help="default the model's .json")
-    trial.add_argument("--filter-model", default=None, help="default value_function_manager.DEFAULT_MODEL")
+    trial.add_argument("--filter-model", default=None, help="default components/safe_rl/v2/filters")
 
     sweep = sub.add_parser("sweep", help="the adaptive sweep, resumable")
     sweep.add_argument("--robot", default="aliengo")

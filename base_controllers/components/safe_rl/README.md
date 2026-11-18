@@ -6,9 +6,10 @@
 
 | Folder | What |
 |---|---|
-| `v2/` | **the current study**: Q(o, Δ) on the policy's observation, ABS and the paper's V as baselines, push-family tests. Code only; `run_v2.sh` writes `v2/data/`, `v2/models/`, `v2/report/` |
+| `v2/` | **the current study**: Q(o, Δ) on the policy's observation, ABS and the paper's V as baselines, push-family tests. Code and the deployed filters; `run_v2.sh` writes `v2/data/`, `v2/models/`, `v2/report/` |
 | `reports/v2/` | its results: **`mps_study_report.md`** (the full write-up, paper vs now), `v2_report.md` (the working log), per-robot tables (`<robot>_v2.md`; `_oct` = October backup policy), figures, and the final models in `models/` |
 | `reports/v1/` | the first study (value on the full state, Oct–Nov 2026): `value_function_comparison.md`, `mps_vs_abs_diagnosis.md`, `paper_vs_implementation.md`, their figures, the motor-curve models |
+| `v2/filters/` | the deployed filters, `VF_<abs\|mps>_<robot>.onnx`: what `rl_quadruped_controller.py --safety-filter mps\|abs` loads |
 | `value_function/` | the v1 value function, still the one `saferl_controller.py` loads (`models/VF_<abs\|mps>_<robot>.onnx`) |
 | root `*.py`, `*.sh` | Gazebo data collection shared by both studies (`dataset_manager.py`, `fall_rule.py`, `run_batches.sh`, `run_in_image.sh`) and the v1 pipeline (`run_pipeline.sh`, `summarize.sh`, `compare_filter.py`, plots) |
 | `paper/` | the paper sources (local only) |
@@ -43,8 +44,8 @@ changes. The pipeline runs for the Aliengo and the Go2 (`--robot`, policies in
 
 ```bash
 # the robot controller with the safety filter (lab container, rl_quadruped/)
-python3 rl_quadruped_controller.py --robot go2 --safety-filter                 # Gazebo
-./run_rl_controller.sh --robot go2 --real --input joy --safety-filter          # robot
+python3 rl_quadruped_controller.py --robot go2 --safety-filter mps             # Gazebo, ours
+./run_rl_controller.sh --robot go2 --real --input joy --safety-filter abs      # robot, ABS
 
 # watch the filter in Gazebo: pushes, V in rviz and rqt_plot (lab container, base_controllers/)
 python3 saferl_controller.py --robot go2 --plot
@@ -54,11 +55,11 @@ python3 saferl_controller.py --robot go2 --plot
 components/safe_rl/run_pipeline.sh go2
 ```
 
-The filter loads the robot's default model, `value_function/models/VF_abs_<robot>.onnx` (ABS's
-reach-avoid value, the one that left the safe set least in closed loop on both robots, see the
-comparison), with its threshold, margin and switching count from the
-`.json` next to it; nothing besides the lab image is needed to run it. `--filter-model` runs
-another one.
+The robot controller runs the v2 filter: `--safety-filter mps` (ours, Q(o, 1) >= 0.9) or `abs`
+(ABS, -V_RA >= 0.05) loads `v2/filters/VF_<method>_<robot>.onnx`, on the policy's own observation
+at every inference; no value means `mps`. `--filter-threshold` and `--filter-model` change the
+threshold and the model; nothing besides the lab image is needed. `saferl_controller.py` and the
+pipeline below still run the v1 filter, `value_function/models/VF_abs_<robot>.onnx` by default.
 
 ## Files
 
@@ -83,10 +84,10 @@ Paths from `robot_control/base_controllers`, where every command below runs: the
 | `components/safe_rl/summarize.sh` | a robot's figures and numbers: `report_figures/<robot>_*` and `<robot>_summary.txt` |
 | `components/safe_rl/value_function/value_function_manager.py` | the filter: V, threshold, margin and the switch, for any controller |
 | `saferl_controller.py` | Gazebo test to watch: walking, pushes, V in rviz and `rqt_plot` |
-| `rl_quadruped/rl_quadruped_controller.py --safety-filter` | the robot controller with the filter (off by default) |
+| `rl_quadruped/rl_quadruped_controller.py --safety-filter mps\|abs` | the robot controller with the v2 filter (`v2/shield.py`, off by default) |
 | `vf_rosbag.py` | V of a recorded bag |
-| `components/safe_rl/value_function/models/VF_<name>_<robot>.{pkl,onnx,json}` | the models: `abs`, `mps`, `mps_early`, on the Aliengo `mps_polygon`; the default per robot in `DEFAULT_MODEL` |
-| `components/safe_rl/report_figures/` | the figures and the numbers behind them |
+| `components/safe_rl/value_function/models/VF_<abs\|mps>_<robot>.{pkl,onnx,json}` | the v1 models; the default per robot in `DEFAULT_MODEL` |
+| `components/safe_rl/reports/v1/report_figures/` | the figures and the numbers behind them |
 
 ## Where to run
 
@@ -370,10 +371,10 @@ It switches to the safe policy after `min_switch` evaluations in a row below thr
 `np.inf`: never). `vf.reset()` returns to the walking policy. The manager runs the `.onnx` on onnxruntime with one thread and
 needs no JAX: 0.015 ms per evaluation on average.
 
-`rl_quadruped/rl_quadruped_controller.py` has the filter behind `--safety-filter` (off by default;
-`--filter-threshold`, `--filter-margin`, `--filter-model`): `RL` hands over to `SAFE_STOP` and back,
-the filter keeps checking after it hands back, and a safe stop the operator asks for stays the
-operator's. Its README (Safety filter) has the details.
+`rl_quadruped/rl_quadruped_controller.py` no longer uses this manager: it runs the v2 filter
+(`v2/shield.py`, `--safety-filter mps|abs`, `--filter-threshold`, `--filter-model`) on the policy's
+observation, and once it switches the safe policy keeps the robot until the operator resumes. Its
+README (Safety filter) has the details.
 
 ## Reproducing the report
 
