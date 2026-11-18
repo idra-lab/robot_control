@@ -29,6 +29,13 @@ import numpy as np
 import onnxruntime as ort
 
 DELTA_MAX = 10  # policy steps (0.2 s at 50 Hz), the largest delta the mps model is trained on
+# The deployed filters, VF_<abs|mps>_<robot>.onnx and .json: the study's final models
+# (reports/v2/models), loaded by rl_quadruped_controller.py --safety-filter.
+FILTERS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "filters")
+
+
+def default_model(robot_name, method):
+    return os.path.join(FILTERS_DIR, f"VF_{method}_{robot_name}.onnx")
 
 
 class Shield:

@@ -1,0 +1,11 @@
+{
+  "method": "mps",
+  "obs_dim": 228,
+  "threshold": 0.9,
+  "delta": 1,
+  "delta_max": 10,
+  "held_out_loss": 0.233773335814476,
+  "threshold_walking": 0.7032554149627686,
+  "threshold_walking_rate": 0.01,
+  "source": "reports/v2/models/VF_mps_aliengo (2026-11-13, safe policy <robot>_velocity_safe.onnx retrained on handovers)"
+}

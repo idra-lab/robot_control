@@ -1,0 +1,9 @@
+{
+  "method": "abs",
+  "obs_dim": 228,
+  "threshold": 0.05,
+  "delta": 1,
+  "delta_max": 10,
+  "held_out_loss": 0.01072709634900093,
+  "source": "reports/v2/models/VF_abs_go2 (2026-11-13, safe policy <robot>_velocity_safe.onnx retrained on handovers)"
+}
